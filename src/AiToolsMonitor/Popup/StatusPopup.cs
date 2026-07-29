@@ -1,10 +1,14 @@
 using AiToolsMonitor.Monitoring;
 using Microsoft.Win32;
+using System.ComponentModel;
+using System.Drawing.Drawing2D;
 using System.Runtime.InteropServices;
 
 namespace AiToolsMonitor.Popup;
 
-/// <summary>Borderless popup shown near the tray icon on left-click.</summary>
+/// <summary>
+/// Right-docked glassmorphism sidebar panel displaying AI tool telemetry and usage limits.
+/// </summary>
 public sealed class StatusPopup : Form
 {
     private const int WsCaption = 0x00C00000;
@@ -19,14 +23,21 @@ public sealed class StatusPopup : Form
     private const int HtLeft = 10;
     private const int HtBottomRight = 17;
 
-    private readonly Label _header;
-    private readonly TableLayoutPanel _rows;
-    private readonly Label _lastUpdated;
+    private readonly Panel _headerContainer;
+    private readonly Label _headerTitle;
+    private readonly Label _headerSubtitle;
+    private readonly FlowLayoutPanel _cardContainer;
+    private readonly Panel _footerContainer;
+    private readonly Label _lastUpdatedLabel;
+    private readonly Label _runningCountBadge;
 
     private ThemeSettings _theme;
     private BackdropMode _backdropMode;
     private Color _primaryText;
     private Color _secondaryText;
+    private Color _cardBackground;
+    private Color _cardBorder;
+    private Color _pinkAccent;
     private Color _fallbackSurface;
 
     public StatusPopup()
@@ -38,15 +49,10 @@ public sealed class StatusPopup : Form
         ShowInTaskbar = false;
         TopMost = true;
 
-        // Keep the HWND fully opaque. DWM supplies translucency.
         Opacity = 1.0;
         BackColor = Color.Black;
-        Padding = new Padding(1);
-        Width = 340;
-        Height = 210;
+        Width = 350;
 
-        // Do not enable form-level OptimizedDoubleBuffer/WS_EX_COMPOSITED --
-        // an opaque back buffer can cover the DWM backdrop surface.
         DoubleBuffered = false;
 
         Deactivate += (_, _) => Hide();
@@ -57,46 +63,82 @@ public sealed class StatusPopup : Form
                 Hide();
         };
 
-        _header = new Label
+        // Header Panel
+        _headerContainer = new Panel
+        {
+            Dock = DockStyle.Top,
+            Height = 65,
+            Padding = new Padding(16, 12, 16, 8),
+            BackColor = Color.Transparent,
+        };
+
+        _headerTitle = new Label
         {
             Text = "AI Tools Monitor",
-            Dock = DockStyle.Top,
-            Font = new Font("Segoe UI", 10, FontStyle.Bold),
-            Height = 28,
-            TextAlign = ContentAlignment.MiddleLeft,
-            Padding = new Padding(8, 0, 0, 0),
+            Font = new Font("Segoe UI", 12, FontStyle.Bold),
+            AutoSize = true,
+            Location = new Point(16, 10),
             BackColor = Color.Transparent,
         };
 
-        _rows = new TableLayoutPanel
+        _headerSubtitle = new Label
         {
-            Dock = DockStyle.Top,
-            ColumnCount = 4,
-            RowCount = ToolProfile.Defaults.Length,
-            AutoSize = false,
-            Height = 26 * ToolProfile.Defaults.Length,
-
-            // The old opaque RGB(32,32,32) would cover the backdrop.
+            Text = "Live Telemetry & Quota Limits",
+            Font = new Font("Segoe UI", 8.5f, FontStyle.Regular),
+            AutoSize = true,
+            Location = new Point(16, 34),
             BackColor = Color.Transparent,
         };
-        _rows.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40));
-        _rows.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 20));
-        _rows.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 20));
-        _rows.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 20));
 
-        _lastUpdated = new Label
+        _headerContainer.Controls.Add(_headerTitle);
+        _headerContainer.Controls.Add(_headerSubtitle);
+
+        // Footer Panel
+        _footerContainer = new Panel
         {
             Dock = DockStyle.Bottom,
-            Height = 22,
-            Font = new Font("Segoe UI", 8),
-            TextAlign = ContentAlignment.MiddleLeft,
-            Padding = new Padding(8, 0, 0, 0),
+            Height = 40,
+            Padding = new Padding(16, 8, 16, 8),
             BackColor = Color.Transparent,
         };
 
-        Controls.Add(_rows);
-        Controls.Add(_header);
-        Controls.Add(_lastUpdated);
+        _lastUpdatedLabel = new Label
+        {
+            Text = "Last updated: --:--:--",
+            Font = new Font("Segoe UI", 8f),
+            Dock = DockStyle.Left,
+            AutoSize = true,
+            TextAlign = ContentAlignment.MiddleLeft,
+            BackColor = Color.Transparent,
+        };
+
+        _runningCountBadge = new Label
+        {
+            Text = "0 Active",
+            Font = new Font("Segoe UI", 8f, FontStyle.Bold),
+            Dock = DockStyle.Right,
+            AutoSize = true,
+            TextAlign = ContentAlignment.MiddleRight,
+            BackColor = Color.Transparent,
+        };
+
+        _footerContainer.Controls.Add(_lastUpdatedLabel);
+        _footerContainer.Controls.Add(_runningCountBadge);
+
+        // Center scrollable card list container
+        _cardContainer = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            AutoScroll = true,
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            Padding = new Padding(12, 4, 12, 4),
+            BackColor = Color.Transparent,
+        };
+
+        Controls.Add(_cardContainer);
+        Controls.Add(_headerContainer);
+        Controls.Add(_footerContainer);
 
         ApplyThemeColors();
     }
@@ -106,20 +148,10 @@ public sealed class StatusPopup : Form
         get
         {
             CreateParams cp = base.CreateParams;
-
-            // These frame hints let DWM retain its native rounded clipping and
-            // shadow, while WM_NCCALCSIZE below makes the whole area client-area.
             cp.Style |= WsCaption | WsThickFrame;
-
-            // Keep the popup out of Alt+Tab/taskbar switching.
             cp.ExStyle |= WsExToolWindow;
-
-            // Layered HWNDs interfere with native DWM rounding/backdrops.
             cp.ExStyle &= ~WsExLayered;
-
-            // Classic fallback; DWM owns the shadow on composited Windows 11.
             cp.ClassStyle |= CsDropShadow;
-
             return cp;
         }
     }
@@ -127,7 +159,6 @@ public sealed class StatusPopup : Form
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
-
         _theme = ReadThemeSettings();
         ApplyThemeColors();
         ApplyBackdrop();
@@ -135,7 +166,6 @@ public sealed class StatusPopup : Form
 
     protected override void WndProc(ref Message m)
     {
-        // Remove the visible caption/sizing frame while retaining its DWM hints.
         if (m.Msg == WmNcCalcSize && m.WParam != nint.Zero)
         {
             m.Result = nint.Zero;
@@ -145,11 +175,9 @@ public sealed class StatusPopup : Form
         if (m.Msg == WmNcHitTest)
         {
             base.WndProc(ref m);
-
             long hit = m.Result.ToInt64();
             if (hit >= HtLeft && hit <= HtBottomRight)
                 m.Result = (nint)HtClient;
-
             return;
         }
 
@@ -161,8 +189,7 @@ public sealed class StatusPopup : Form
         _backdropMode = BackdropMode.None;
 
         bool windows11 = OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000);
-        bool supportsSystemBackdrop =
-            OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22621);
+        bool supportsSystemBackdrop = OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22621);
 
         if (windows11)
         {
@@ -172,42 +199,33 @@ public sealed class StatusPopup : Form
             int corner = (int)DwmWindowCornerPreference.Round;
             SetDwmAttribute(DwmWindowAttribute.WindowCornerPreference, corner);
 
-            // COLORREF has no alpha: these are the precomposited equivalents
-            // of white/20% over #181818 and black/14% over #F5F5F5.
             Color border = _theme.HighContrast
                 ? SystemColors.WindowFrame
                 : _theme.IsDark
-                    ? Color.FromArgb(0x46, 0x46, 0x46)
-                    : Color.FromArgb(0xD3, 0xD3, 0xD3);
+                    ? Color.FromArgb(0x60, 0x40, 0x50)
+                    : Color.FromArgb(0xF0, 0xC0, 0xD0);
 
             int borderColor = ToColorRef(border);
             SetDwmAttribute(DwmWindowAttribute.BorderColor, borderColor);
         }
 
-        bool allowGlass =
-            !_theme.HighContrast &&
-            _theme.TransparencyEnabled;
+        bool allowGlass = !_theme.HighContrast && _theme.TransparencyEnabled;
 
         if (allowGlass)
         {
             var margins = new Margins(-1);
-            int extendResult =
-                DwmExtendFrameIntoClientArea(Handle, ref margins);
+            int extendResult = DwmExtendFrameIntoClientArea(Handle, ref margins);
 
             if (extendResult >= 0 && supportsSystemBackdrop)
             {
                 int acrylic = (int)DwmSystemBackdropType.TransientWindow;
-
-                if (SetDwmAttribute(
-                    DwmWindowAttribute.SystemBackdropType,
-                    acrylic))
+                if (SetDwmAttribute(DwmWindowAttribute.SystemBackdropType, acrylic))
                 {
                     _backdropMode = BackdropMode.SystemAcrylic;
                 }
             }
 
-            if (_backdropMode == BackdropMode.None &&
-                OperatingSystem.IsWindowsVersionAtLeast(10))
+            if (_backdropMode == BackdropMode.None && OperatingSystem.IsWindowsVersionAtLeast(10))
             {
                 if (TrySetLegacyAccent(AccentState.EnableAcrylicBlurBehind))
                 {
@@ -230,15 +248,13 @@ public sealed class StatusPopup : Form
     private bool TrySetLegacyAccent(AccentState state)
     {
         Color tint = _theme.IsDark
-            ? Color.FromArgb(0xB8, 0x18, 0x18, 0x18)
-            : Color.FromArgb(0xC7, 0xF5, 0xF5, 0xF5);
+            ? Color.FromArgb(0xD0, 0x1C, 0x14, 0x1A)
+            : Color.FromArgb(0xD0, 0xFF, 0xF0, 0xF5);
 
         var policy = new AccentPolicy
         {
             AccentState = state,
-            AccentFlags = state == AccentState.EnableAcrylicBlurBehind
-                ? 0u
-                : 2u,
+            AccentFlags = state == AccentState.EnableAcrylicBlurBehind ? 0u : 2u,
             GradientColor = ToAbgr(tint),
             AnimationId = 0,
         };
@@ -271,11 +287,7 @@ public sealed class StatusPopup : Form
 
     private bool SetDwmAttribute(DwmWindowAttribute attribute, int value)
     {
-        return DwmSetWindowAttribute(
-            Handle,
-            attribute,
-            ref value,
-            sizeof(int)) >= 0;
+        return DwmSetWindowAttribute(Handle, attribute, ref value, sizeof(int)) >= 0;
     }
 
     private void ApplyThemeColors()
@@ -285,89 +297,241 @@ public sealed class StatusPopup : Form
             _fallbackSurface = SystemColors.Window;
             _primaryText = SystemColors.WindowText;
             _secondaryText = SystemColors.GrayText;
+            _cardBackground = SystemColors.Control;
+            _cardBorder = SystemColors.WindowFrame;
+            _pinkAccent = SystemColors.Highlight;
         }
         else if (_theme.IsDark)
         {
-            _fallbackSurface = Color.FromArgb(0x18, 0x18, 0x18);
-            _primaryText = Color.FromArgb(0xF5, 0xF5, 0xF5);
-            _secondaryText = Color.FromArgb(0xBD, 0xBD, 0xBD);
+            // Dark Plum & Pink Glass palette
+            _fallbackSurface = Color.FromArgb(0x1C, 0x14, 0x1A);
+            _primaryText = Color.FromArgb(0xFA, 0xEB, 0xF2);
+            _secondaryText = Color.FromArgb(0xBE, 0xA0, 0xAF);
+            _cardBackground = Color.FromArgb(140, 42, 30, 40);
+            _cardBorder = Color.FromArgb(70, 180, 100, 130);
+            _pinkAccent = Color.FromArgb(0xF5, 0x6E, 0xA0);
         }
         else
         {
-            _fallbackSurface = Color.FromArgb(0xF5, 0xF5, 0xF5);
-            _primaryText = Color.FromArgb(0x1A, 0x1A, 0x1A);
-            _secondaryText = Color.FromArgb(0x66, 0x66, 0x66);
+            // Pink & White Glassmorphism palette
+            _fallbackSurface = Color.FromArgb(0xFF, 0xF5, 0xF8);
+            _primaryText = Color.FromArgb(0x2D, 0x14, 0x23);
+            _secondaryText = Color.FromArgb(0x6E, 0x46, 0x5A);
+            _cardBackground = Color.FromArgb(180, 255, 255, 255);
+            _cardBorder = Color.FromArgb(90, 230, 170, 195);
+            _pinkAccent = Color.FromArgb(0xEB, 0x4B, 0x82);
         }
 
         ForeColor = _primaryText;
-        _header.ForeColor = _primaryText;
-        _lastUpdated.ForeColor = _secondaryText;
-        _rows.BackColor = Color.Transparent;
-
-        foreach (Control control in _rows.Controls)
-        {
-            if (control is Label label)
-                label.ForeColor = label.Tag is Color statusColor
-                    ? statusColor
-                    : _primaryText;
-        }
+        _headerTitle.ForeColor = _pinkAccent;
+        _headerSubtitle.ForeColor = _secondaryText;
+        _lastUpdatedLabel.ForeColor = _secondaryText;
+        _runningCountBadge.ForeColor = _pinkAccent;
     }
 
     public void Render(StatusSnapshot snapshot)
     {
-        _rows.Controls.Clear();
-        _rows.RowStyles.Clear();
+        _cardContainer.SuspendLayout();
+        _cardContainer.Controls.Clear();
 
-        for (int i = 0; i < snapshot.Tools.Count; i++)
+        foreach (var tool in snapshot.Tools)
         {
-            var tool = snapshot.Tools[i];
-            _rows.RowStyles.Add(
-                new RowStyle(SizeType.Absolute, 26));
-
-            Color dotColor = tool.State switch
-            {
-                ToolState.Idle => Color.Gray,
-                ToolState.Quiet => Color.FromArgb(90, 160, 220),
-                ToolState.Active => Color.FromArgb(90, 220, 120),
-                _ => Color.Gray,
-            };
-
-            _rows.Controls.Add(
-                MakeCell(tool.DisplayName, dotColor, bold: true), 0, i);
-            _rows.Controls.Add(
-                MakeCell(tool.State.ToString(), null), 1, i);
-            _rows.Controls.Add(
-                MakeCell(tool.State == ToolState.Idle
-                    ? "-"
-                    : $"{tool.CpuPercent:0}%", null), 2, i);
-            _rows.Controls.Add(
-                MakeCell(tool.State == ToolState.Idle
-                    ? "-"
-                    : $"{tool.RamMb:0} MB", null), 3, i);
+            var card = CreateToolCard(tool);
+            _cardContainer.Controls.Add(card);
         }
 
-        _lastUpdated.Text =
-            $"Last updated {snapshot.SampledAtUtc.ToLocalTime():HH:mm:ss}";
+        _lastUpdatedLabel.Text = $"Updated {snapshot.SampledAtUtc.ToLocalTime():HH:mm:ss}";
+        _runningCountBadge.Text = $"{snapshot.RunningCount} Running";
+
+        _cardContainer.ResumeLayout(true);
     }
 
-    private Label MakeCell(
-        string text,
-        Color? dotColor,
-        bool bold = false)
+    private Panel CreateToolCard(ToolStatus tool)
     {
-        return new Label
+        bool supportsQuota = tool.DisplayName is "Codex" or "Claude Code";
+        int cardHeight = supportsQuota ? 122 : 62;
+
+        var card = new GlassCardPanel
         {
-            Text = dotColor.HasValue ? "● " + text : text,
-            Dock = DockStyle.Fill,
-            ForeColor = dotColor ?? _primaryText,
-            BackColor = Color.Transparent,
-            Tag = dotColor,
-            Font = new Font(
-                "Segoe UI",
-                9,
-                bold ? FontStyle.Bold : FontStyle.Regular),
-            TextAlign = ContentAlignment.MiddleLeft,
+            Width = 308,
+            Height = cardHeight,
+            Margin = new Padding(0, 0, 0, 10),
+            Padding = new Padding(12, 10, 12, 10),
+            BackColor = _cardBackground,
+            BorderColor = _cardBorder,
         };
+
+        // Header Row: Dot + DisplayName + State + CPU/RAM
+        Color dotColor = tool.State switch
+        {
+            ToolState.Idle => Color.FromArgb(150, 150, 160),
+            ToolState.Quiet => Color.FromArgb(70, 160, 220),
+            ToolState.Active => Color.FromArgb(40, 190, 110),
+            _ => Color.Gray,
+        };
+
+        var headerLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            Height = 26,
+            ColumnCount = 3,
+            RowCount = 1,
+            BackColor = Color.Transparent,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty,
+        };
+        headerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 45));
+        headerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
+        headerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 30));
+
+        var nameLabel = new Label
+        {
+            Text = "●  " + tool.DisplayName,
+            Font = new Font("Segoe UI", 9.5f, FontStyle.Bold),
+            ForeColor = dotColor,
+            Dock = DockStyle.Fill,
+            TextAlign = ContentAlignment.MiddleLeft,
+            BackColor = Color.Transparent,
+        };
+
+        var stateLabel = new Label
+        {
+            Text = tool.State.ToString(),
+            Font = new Font("Segoe UI", 8.5f, FontStyle.Regular),
+            ForeColor = _primaryText,
+            Dock = DockStyle.Fill,
+            TextAlign = ContentAlignment.MiddleLeft,
+            BackColor = Color.Transparent,
+        };
+
+        string metricText = tool.State == ToolState.Idle
+            ? "--"
+            : $"{tool.CpuPercent:0}% · {tool.RamMb:0} MB";
+
+        var metricsLabel = new Label
+        {
+            Text = metricText,
+            Font = new Font("Segoe UI", 8.5f, FontStyle.Regular),
+            ForeColor = _secondaryText,
+            Dock = DockStyle.Fill,
+            TextAlign = ContentAlignment.MiddleRight,
+            BackColor = Color.Transparent,
+        };
+
+        headerLayout.Controls.Add(nameLabel, 0, 0);
+        headerLayout.Controls.Add(stateLabel, 1, 0);
+        headerLayout.Controls.Add(metricsLabel, 2, 0);
+        card.Controls.Add(headerLayout);
+
+        // Quota Section for Codex and Claude Code
+        if (supportsQuota)
+        {
+            var quotaPanel = new Panel
+            {
+                Dock = DockStyle.Fill,
+                Margin = new Padding(0, 4, 0, 0),
+                BackColor = Color.Transparent,
+            };
+
+            var quota = tool.Quota;
+            QuotaFreshness freshness = quota?.Freshness ?? QuotaFreshness.Unavailable;
+
+            string primaryText = quota?.PrimaryPercent.HasValue == true
+                ? $"{quota.PrimaryPercent.Value:0}%"
+                : "--";
+
+            string secondaryText = quota?.SecondaryPercent.HasValue == true
+                ? $"{quota.SecondaryPercent.Value:0}%"
+                : "--";
+
+            string freshnessBadge = freshness switch
+            {
+                QuotaFreshness.Live => "Live",
+                QuotaFreshness.Stale => "Stale",
+                QuotaFreshness.Unavailable => "Unavailable",
+                _ => "Unavailable"
+            };
+
+            Color freshnessColor = freshness switch
+            {
+                QuotaFreshness.Live => Color.FromArgb(40, 180, 100),
+                QuotaFreshness.Stale => Color.FromArgb(220, 140, 30),
+                QuotaFreshness.Unavailable => Color.FromArgb(140, 140, 150),
+                _ => Color.Gray
+            };
+
+            // Quota Row 1: 5-Hr Limit
+            var primaryLabel = new Label
+            {
+                Text = $"5-Hr Limit:  {primaryText}",
+                Font = new Font("Segoe UI", 8.25f, FontStyle.Bold),
+                ForeColor = _primaryText,
+                Location = new Point(0, 28),
+                AutoSize = true,
+                BackColor = Color.Transparent,
+            };
+
+            var badgeLabel = new Label
+            {
+                Text = $"[{freshnessBadge}]",
+                Font = new Font("Segoe UI", 7.5f, FontStyle.Bold),
+                ForeColor = freshnessColor,
+                Location = new Point(220, 28),
+                AutoSize = true,
+                BackColor = Color.Transparent,
+            };
+
+            // Quota Row 2: Weekly Limit
+            var secondaryLabel = new Label
+            {
+                Text = $"Weekly:       {secondaryText}",
+                Font = new Font("Segoe UI", 8.25f, FontStyle.Bold),
+                ForeColor = _primaryText,
+                Location = new Point(0, 48),
+                AutoSize = true,
+                BackColor = Color.Transparent,
+            };
+
+            // Reset time indicator if resetsAt is present
+            if (quota?.ResetsAt.HasValue == true && freshness != QuotaFreshness.Unavailable)
+            {
+                var remaining = quota.ResetsAt.Value - DateTimeOffset.UtcNow;
+                string resetStr = remaining.TotalMinutes > 0
+                    ? $"Resets in {(int)remaining.TotalHours}h {remaining.Minutes}m"
+                    : "Reset imminent";
+
+                var resetLabel = new Label
+                {
+                    Text = resetStr,
+                    Font = new Font("Segoe UI", 7.5f, FontStyle.Italic),
+                    ForeColor = _secondaryText,
+                    Location = new Point(180, 48),
+                    AutoSize = true,
+                    BackColor = Color.Transparent,
+                };
+                quotaPanel.Controls.Add(resetLabel);
+            }
+
+            // Quota Usage Bar (drawn based on primary limit)
+            var progressBar = new QuotaProgressBar
+            {
+                Location = new Point(0, 68),
+                Size = new Size(284, 6),
+                ValuePercent = quota?.PrimaryPercent ?? 0,
+                BarColor = _pinkAccent,
+                Freshness = freshness,
+            };
+
+            quotaPanel.Controls.Add(primaryLabel);
+            quotaPanel.Controls.Add(badgeLabel);
+            quotaPanel.Controls.Add(secondaryLabel);
+            quotaPanel.Controls.Add(progressBar);
+
+            card.Controls.Add(quotaPanel);
+            quotaPanel.BringToFront();
+        }
+
+        return card;
     }
 
     public void ShowNearTray()
@@ -378,15 +542,14 @@ public sealed class StatusPopup : Form
         {
             _theme = currentTheme;
             ApplyThemeColors();
-
             if (IsHandleCreated)
                 ApplyBackdrop();
         }
 
         var workingArea = Screen.PrimaryScreen!.WorkingArea;
-        Location = new Point(
-            workingArea.Right - Width - 8,
-            workingArea.Bottom - Height - 8);
+        Width = 350;
+        Height = workingArea.Height;
+        Location = new Point(workingArea.Right - Width, workingArea.Top);
 
         Show();
         Activate();
@@ -394,21 +557,11 @@ public sealed class StatusPopup : Form
 
     private static ThemeSettings ReadThemeSettings()
     {
-        const string path =
-            @"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";
+        const string path = @"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";
+        using RegistryKey? key = Registry.CurrentUser.OpenSubKey(path);
 
-        using RegistryKey? key =
-            Registry.CurrentUser.OpenSubKey(path);
-
-        // Missing values default to Windows' compatibility default: light.
-        bool isLight =
-            key?.GetValue("AppsUseLightTheme") is int light
-                ? light != 0
-                : true;
-
-        bool transparencyEnabled =
-            key?.GetValue("EnableTransparency") is not int transparency ||
-            transparency != 0;
+        bool isLight = key?.GetValue("AppsUseLightTheme") is int light ? light != 0 : true;
+        bool transparencyEnabled = key?.GetValue("EnableTransparency") is not int transparency || transparency != 0;
 
         return new ThemeSettings(
             IsDark: !isLight,
@@ -418,13 +571,11 @@ public sealed class StatusPopup : Form
 
     private static int ToColorRef(Color color)
     {
-        // COLORREF = 0x00BBGGRR
         return color.R | (color.G << 8) | (color.B << 16);
     }
 
     private static uint ToAbgr(Color color)
     {
-        // AccentPolicy GradientColor = 0xAABBGGRR
         return ((uint)color.A << 24) |
                ((uint)color.B << 16) |
                ((uint)color.G << 8) |
@@ -526,12 +677,78 @@ public sealed class StatusPopup : Form
         nint hwnd,
         ref Margins margins);
 
-    [DllImport(
-        "user32.dll",
-        ExactSpelling = true,
-        SetLastError = true)]
+    [DllImport("user32.dll", ExactSpelling = true, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool SetWindowCompositionAttribute(
         nint hwnd,
         ref WindowCompositionAttribData data);
+}
+
+/// <summary>
+/// Custom glass card panel control with subtle border drawing.
+/// </summary>
+internal sealed class GlassCardPanel : Panel
+{
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public Color BorderColor { get; set; } = Color.FromArgb(90, 230, 170, 195);
+
+    public GlassCardPanel()
+    {
+        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e);
+        using var pen = new Pen(BorderColor, 1f);
+        var rect = new Rectangle(0, 0, Width - 1, Height - 1);
+        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        e.Graphics.DrawRectangle(pen, rect);
+    }
+}
+
+/// <summary>
+/// Lightweight custom progress bar for quota percentage.
+/// </summary>
+internal sealed class QuotaProgressBar : Control
+{
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public double ValuePercent { get; set; }
+
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public Color BarColor { get; set; } = Color.FromArgb(235, 75, 130);
+
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public QuotaFreshness Freshness { get; set; }
+
+    public QuotaProgressBar()
+    {
+        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
+        BackColor = Color.Transparent;
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e);
+        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+
+        var trackRect = new Rectangle(0, 0, Width, Height);
+        using var trackBrush = new SolidBrush(Color.FromArgb(50, 180, 180, 190));
+        e.Graphics.FillRectangle(trackBrush, trackRect);
+
+        if (Freshness != QuotaFreshness.Unavailable && ValuePercent > 0)
+        {
+            int fillWidth = (int)Math.Clamp(Width * (ValuePercent / 100.0), 4, Width);
+            var fillRect = new Rectangle(0, 0, fillWidth, Height);
+
+            Color colorToUse = Freshness switch
+            {
+                QuotaFreshness.Stale => Color.FromArgb(220, 140, 30),
+                _ => BarColor
+            };
+
+            using var fillBrush = new SolidBrush(colorToUse);
+            e.Graphics.FillRectangle(fillBrush, fillRect);
+        }
+    }
 }

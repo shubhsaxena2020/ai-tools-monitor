@@ -50,10 +50,23 @@ public sealed class TrayHost : IDisposable
         // Right-click is handled natively by ContextMenuStrip assignment above.
     }
 
-    private void Poll()
+    private async void Poll()
     {
         var samples = _enumerator.Scan();
-        var snapshot = ToolDetector.Aggregate(samples);
+        var rawSnapshot = ToolDetector.Aggregate(samples);
+
+        var codexTask = CodexQuotaClient.GetQuotaAsync();
+        var claudeQuota = ClaudeCodeQuotaReader.GetQuota();
+        var codexQuota = await codexTask;
+
+        var enrichedTools = rawSnapshot.Tools.Select(t =>
+        {
+            if (t.DisplayName == "Codex") return t with { Quota = codexQuota };
+            if (t.DisplayName == "Claude Code") return t with { Quota = claudeQuota };
+            return t;
+        }).ToList();
+
+        var snapshot = new StatusSnapshot(enrichedTools, rawSnapshot.SampledAtUtc);
         _popup.Render(snapshot);
 
         if (snapshot.RunningCount != _runningCount)
