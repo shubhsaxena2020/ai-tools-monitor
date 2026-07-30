@@ -3,3 +3,4 @@ obj/
 *.user
 artifacts/
 app.log
+publish/

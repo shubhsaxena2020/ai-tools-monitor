@@ -84,3 +84,17 @@ then live-clicked through every one of the 6 sidebar pages after the final merge
 noticeably slower than the documented 400ms grace period in real testing (it did eventually
 retract, just not as snappy as designed) — worth a closer look later but not worth delaying
 this delivery over.
+
+## Follow-up (2026-07-30, same day): app was still not discoverable
+
+Even with the redesign done, the app had never been registered with Windows at all — no Start
+Menu entry, so Windows Search couldn't find it and there was no way to launch it except running
+the dev build's exe directly or digging into the hidden tray-icon overflow. Fixed by:
+
+- `dotnet publish -c Release -o publish` — a stable, non-Debug build path that survives future
+  `dotnet build` runs without needing to be re-pointed.
+- A real Start Menu shortcut (`AI Tools Monitor.lnk` in the user's Start Menu Programs folder)
+  targeting that published exe.
+- Verified via `Get-StartApps` (the same index Windows Search reads from) that the app now
+  resolves under the name "AI Tools Monitor" — confirmed registered, not just assumed from
+  creating the .lnk file.
