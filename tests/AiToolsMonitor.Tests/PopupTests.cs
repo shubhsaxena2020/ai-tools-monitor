@@ -86,4 +86,50 @@ public class PopupTests
 
         Assert.True(System.IO.File.Exists(artifactPath));
     }
+
+    [Fact]
+    public void MainShellForm_ShowPage_ShowsWindowAndDashboardPage()
+    {
+        bool win32Visible = false;
+        bool formVisible = false;
+        Exception? threadEx = null;
+
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                using var trayHost = new AiToolsMonitor.Tray.TrayHost();
+                var mainShellField = typeof(AiToolsMonitor.Tray.TrayHost).GetField("_mainShell", BindingFlags.NonPublic | BindingFlags.Instance)!;
+                var mainShell = (AiToolsMonitor.Shell.MainShellForm)mainShellField.GetValue(trayHost)!;
+
+                var timer = new System.Windows.Forms.Timer { Interval = 50 };
+                timer.Tick += (_, _) =>
+                {
+                    timer.Stop();
+                    mainShell.ShowPage(AiToolsMonitor.Shell.ShellPage.Dashboard);
+                    formVisible = mainShell.Visible;
+                    win32Visible = IsWindowVisibleNative(mainShell.Handle);
+                    Application.ExitThread();
+                };
+                timer.Start();
+
+                Application.Run();
+            }
+            catch (Exception ex)
+            {
+                threadEx = ex;
+            }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        thread.Join();
+
+        if (threadEx != null) throw threadEx;
+
+        Assert.True(formVisible, "Expected mainShell.Visible to be true after ShowPage.");
+        Assert.True(win32Visible, "Expected Win32 IsWindowVisible to be true after ShowPage.");
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll", EntryPoint = "IsWindowVisible")]
+    private static extern bool IsWindowVisibleNative(IntPtr hWnd);
 }
