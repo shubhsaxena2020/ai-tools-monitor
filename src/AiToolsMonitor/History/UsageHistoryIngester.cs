@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
+using AiToolsMonitor.Reports;
 using Microsoft.Data.Sqlite;
 
 namespace AiToolsMonitor.History;
@@ -75,6 +76,8 @@ public sealed class UsageHistoryIngester
 
             long inputTokens = 0;
             long outputTokens = 0;
+            var perModel = new Dictionary<string, (long Input, long Output)>(
+                StringComparer.OrdinalIgnoreCase);
 
             using var stream = new FileStream(
                 transcript.FullName, FileMode.Open,
@@ -106,8 +109,20 @@ public sealed class UsageHistoryIngester
                     if (root.TryGetProperty("message", out var msg) &&
                         msg.TryGetProperty("usage", out var usage))
                     {
-                        inputTokens += GetTokenCount(usage, "input_tokens");
-                        outputTokens += GetTokenCount(usage, "output_tokens");
+                        long messageInput = GetTokenCount(usage, "input_tokens");
+                        long messageOutput = GetTokenCount(usage, "output_tokens");
+                        inputTokens += messageInput;
+                        outputTokens += messageOutput;
+
+                        string model = msg.TryGetProperty("model", out var modelElement) &&
+                                       modelElement.ValueKind == JsonValueKind.String &&
+                                       !string.IsNullOrWhiteSpace(modelElement.GetString())
+                            ? modelElement.GetString()!
+                            : "unknown";
+                        perModel.TryGetValue(model, out var aggregate);
+                        perModel[model] = (
+                            aggregate.Input + messageInput,
+                            aggregate.Output + messageOutput);
                     }
                 }
                 catch (JsonException) { }
@@ -116,6 +131,22 @@ public sealed class UsageHistoryIngester
             if (inputTokens > 0 || outputTokens > 0)
                 _db.UpsertDailyAggregate("Claude Code", today,
                     inputTokens, outputTokens, 0, 1);
+
+            foreach (var (model, usage) in perModel)
+            {
+                var cost = ModelPricingCatalog.CalculateCost(
+                    model,
+                    usage.Input,
+                    usage.Output);
+                _db.UpsertModelDailyAggregate(
+                    "Claude Code",
+                    model,
+                    today,
+                    usage.Input,
+                    usage.Output,
+                    cost.CostUsd,
+                    cost.IsKnown);
+            }
         }
         catch { }
     }
@@ -161,17 +192,48 @@ public sealed class UsageHistoryIngester
             cmd.Parameters.AddWithValue("@dayStart", dayStartUnix);
             cmd.Parameters.AddWithValue("@dayEnd", dayEndUnix);
 
-            using var reader = cmd.ExecuteReader();
-            if (reader.Read())
+            using (var reader = cmd.ExecuteReader())
             {
-                long input = reader.GetInt64(0);
-                long output = reader.GetInt64(1);
-                double cost = reader.GetDouble(2);
-                int sessions = reader.GetInt32(3);
+                if (reader.Read())
+                {
+                    long input = reader.GetInt64(0);
+                    long output = reader.GetInt64(1);
+                    double cost = reader.GetDouble(2);
+                    int sessions = reader.GetInt32(3);
 
-                if (input > 0 || output > 0)
-                    _db.UpsertDailyAggregate("Hermes Agent", today,
-                        input, output, cost, sessions);
+                    if (input > 0 || output > 0)
+                        _db.UpsertDailyAggregate("Hermes Agent", today,
+                            input, output, cost, sessions);
+                }
+            }
+
+            using var modelCmd = conn.CreateCommand();
+            modelCmd.CommandText = """
+                SELECT
+                    model,
+                    COALESCE(SUM(input_tokens), 0),
+                    COALESCE(SUM(output_tokens), 0)
+                FROM session_model_usage
+                WHERE last_seen >= @dayStart AND last_seen < @dayEnd
+                GROUP BY model;
+                """;
+            modelCmd.Parameters.AddWithValue("@dayStart", dayStartUnix);
+            modelCmd.Parameters.AddWithValue("@dayEnd", dayEndUnix);
+            using var modelReader = modelCmd.ExecuteReader();
+            while (modelReader.Read())
+            {
+                string model = modelReader.GetString(0);
+                long input = modelReader.GetInt64(1);
+                long output = modelReader.GetInt64(2);
+                var cost = ModelPricingCatalog.CalculateCost(model, input, output);
+                _db.UpsertModelDailyAggregate(
+                    "Hermes Agent",
+                    model,
+                    today,
+                    input,
+                    output,
+                    cost.CostUsd,
+                    cost.IsKnown);
             }
         }
         catch { }
@@ -218,20 +280,74 @@ public sealed class UsageHistoryIngester
             cmd.Parameters.AddWithValue("@dayStartMs", dayStartMs);
             cmd.Parameters.AddWithValue("@dayEndMs", dayEndMs);
 
-            using var reader = cmd.ExecuteReader();
-            if (reader.Read())
+            using (var reader = cmd.ExecuteReader())
             {
-                long input = reader.GetInt64(0);
-                long output = reader.GetInt64(1);
-                double cost = reader.GetDouble(2);
-                int sessions = reader.GetInt32(3);
+                if (reader.Read())
+                {
+                    long input = reader.GetInt64(0);
+                    long output = reader.GetInt64(1);
+                    double cost = reader.GetDouble(2);
+                    int sessions = reader.GetInt32(3);
 
-                if (input > 0 || output > 0)
-                    _db.UpsertDailyAggregate("OpenCode", today,
-                        input, output, cost, sessions);
+                    if (input > 0 || output > 0)
+                        _db.UpsertDailyAggregate("OpenCode", today,
+                            input, output, cost, sessions);
+                }
+            }
+
+            using var modelCmd = conn.CreateCommand();
+            modelCmd.CommandText = """
+                SELECT
+                    COALESCE(NULLIF(model, ''), 'unknown'),
+                    COALESCE(SUM(tokens_input), 0),
+                    COALESCE(SUM(tokens_output), 0)
+                FROM session
+                WHERE time_updated >= @dayStartMs AND time_updated < @dayEndMs
+                GROUP BY COALESCE(NULLIF(model, ''), 'unknown');
+                """;
+            modelCmd.Parameters.AddWithValue("@dayStartMs", dayStartMs);
+            modelCmd.Parameters.AddWithValue("@dayEndMs", dayEndMs);
+            using var modelReader = modelCmd.ExecuteReader();
+            while (modelReader.Read())
+            {
+                string model = NormalizeOpenCodeModel(modelReader.GetString(0));
+                long input = modelReader.GetInt64(1);
+                long output = modelReader.GetInt64(2);
+                var cost = ModelPricingCatalog.CalculateCost(model, input, output);
+                _db.UpsertModelDailyAggregate(
+                    "OpenCode",
+                    model,
+                    today,
+                    input,
+                    output,
+                    cost.CostUsd,
+                    cost.IsKnown);
             }
         }
         catch { }
+    }
+
+    private static string NormalizeOpenCodeModel(string model)
+    {
+        if (!model.StartsWith('{'))
+            return model;
+
+        try
+        {
+            using var document = JsonDocument.Parse(model);
+            if (document.RootElement.TryGetProperty("id", out var id) &&
+                id.ValueKind == JsonValueKind.String &&
+                !string.IsNullOrWhiteSpace(id.GetString()))
+            {
+                return id.GetString()!;
+            }
+        }
+        catch (JsonException)
+        {
+            // Some OpenCode versions store a plain model name instead of JSON.
+        }
+
+        return model;
     }
 
     private static long GetTokenCount(JsonElement usage, string propertyName)
