@@ -1,10 +1,13 @@
 using System.Globalization;
 using System.Text;
+using AiToolsMonitor.Budget;
 using AiToolsMonitor.Export;
 using AiToolsMonitor.Monitoring;
 using AiToolsMonitor.Popup;
 using AiToolsMonitor.History;
 using AiToolsMonitor.Projects;
+
+using AiToolsMonitor.Analysis;
 
 namespace AiToolsMonitor.Tray;
 
@@ -26,6 +29,10 @@ public sealed class TrayHost : IDisposable
     private bool _firstRunNoticeShown;
     private readonly HistoryDatabase _historyDb = new();
     private UsageHistoryIngester _ingester = null!;
+    private AnalysisForm? _analysisForm;
+    private readonly BudgetConfig _budgetConfig;
+    private readonly BudgetGuard _budgetGuard;
+    private readonly CostAnomalyDetector _anomalyDetector;
 
     public TrayHost()
     {
@@ -48,6 +55,9 @@ public sealed class TrayHost : IDisposable
 
         _historyDb.EnsureCreated();
         _ingester = new UsageHistoryIngester(_historyDb);
+        _budgetConfig = BudgetConfig.Load();
+        _budgetGuard = new BudgetGuard(_budgetConfig, _historyDb);
+        _anomalyDetector = new CostAnomalyDetector(_historyDb);
 
         Poll(); // first sample immediately so the popup isn't empty on first open
     }
@@ -64,65 +74,99 @@ public sealed class TrayHost : IDisposable
 
     private async void Poll()
     {
-        var samples = _enumerator.Scan();
-        var rawSnapshot = ToolDetector.Aggregate(samples);
-
-        var codexTask = CodexQuotaClient.GetQuotaAsync();
-        var claudeQuota = ClaudeCodeQuotaReader.GetQuota();
-        var hermesQuota = HermesQuotaClient.GetQuota();
-        var openCodeQuota = OpenCodeQuotaClient.GetQuota();
-        var codexQuota = await codexTask;
-
-        var enrichedTools = rawSnapshot.Tools.Select(t =>
-        {
-            if (t.DisplayName == "Codex") return t with { Quota = codexQuota };
-            if (t.DisplayName == "Claude Code") return t with { Quota = claudeQuota };
-            if (t.DisplayName == "Hermes Agent") return t with { Quota = hermesQuota };
-            if (t.DisplayName == "OpenCode") return t with { Quota = openCodeQuota };
-            return t;
-        }).ToList();
-
-        var snapshot = new StatusSnapshot(enrichedTools, rawSnapshot.SampledAtUtc);
-        _currentSnapshot = snapshot;
-        _popup.Render(snapshot);
-
         try
         {
-            _ingester.Ingest();
-            var (tokens, cost) = _historyDb.GetTodaySummary();
-            _popup.UpdateTodaySummary(tokens, cost);
-        }
-        catch { /* best effort — history ingestion must never crash the app */ }
+            var samples = _enumerator.Scan();
+            var rawSnapshot = ToolDetector.Aggregate(samples);
 
-        if (snapshot.RunningCount != _runningCount)
+            var codexTask = CodexQuotaClient.GetQuotaAsync();
+            var claudeQuota = ClaudeCodeQuotaReader.GetQuota();
+            var hermesQuota = HermesQuotaClient.GetQuota();
+            var openCodeQuota = OpenCodeQuotaClient.GetQuota();
+            var codexQuota = await codexTask;
+
+            var enrichedTools = rawSnapshot.Tools.Select(t =>
+            {
+                if (t.DisplayName == "Codex") return t with { Quota = codexQuota };
+                if (t.DisplayName == "Claude Code") return t with { Quota = claudeQuota };
+                if (t.DisplayName == "Hermes Agent") return t with { Quota = hermesQuota };
+                if (t.DisplayName == "OpenCode") return t with { Quota = openCodeQuota };
+                return t;
+            }).ToList();
+
+            var snapshot = new StatusSnapshot(enrichedTools, rawSnapshot.SampledAtUtc);
+            _currentSnapshot = snapshot;
+            _popup.Render(snapshot);
+
+            try
+            {
+                _ingester.Ingest();
+                var (tokens, cost) = _historyDb.GetTodaySummary();
+                _popup.UpdateTodaySummary(tokens, cost);
+            }
+            catch { /* best effort — history ingestion must never crash the app */ }
+
+            // Budget guard check
+            try
+            {
+                var alertLevel = _budgetGuard.CheckToday();
+                if (alertLevel == BudgetAlertLevel.HardCapExceeded)
+                {
+                    _notifyIcon.ShowBalloonTip(
+                        6000,
+                        "AI Tools Monitor — HARD CAP EXCEEDED",
+                        $"Today's cost has exceeded the hard cap of ${_budgetConfig.HardCapUsd:F2}.",
+                        ToolTipIcon.Error);
+                }
+                else if (alertLevel == BudgetAlertLevel.SoftCapExceeded)
+                {
+                    _notifyIcon.ShowBalloonTip(
+                        4000,
+                        "AI Tools Monitor — soft cap warning",
+                        $"Today's cost has exceeded the soft cap of ${_budgetConfig.SoftCapUsd:F2}.",
+                        ToolTipIcon.Warning);
+                }
+            }
+            catch { /* best effort */ }
+
+            if (snapshot.RunningCount != _runningCount)
+            {
+                _runningCount = snapshot.RunningCount;
+                _notifyIcon.Icon = TrayIconRenderer.Render(_runningCount);
+                _notifyIcon.Text = _runningCount == 0
+                    ? "AI Tools Monitor: idle"
+                    : $"AI Tools Monitor: {_runningCount} running";
+            }
+
+            if (!_firstRunNoticeShown)
+            {
+                _firstRunNoticeShown = true;
+                _notifyIcon.ShowBalloonTip(4000, "AI Tools Monitor",
+                    "Running. If you don't see the icon, open the hidden icons arrow and drag it beside the clock.",
+                    ToolTipIcon.Info);
+            }
+
+            foreach (var tool in _budgetThresholdTracker.GetNewlyExceededTools(snapshot))
+            {
+                if (tool.Quota?.PrimaryPercent is { } primaryPercent)
+                {
+                    string percent = primaryPercent.ToString("0.#", CultureInfo.InvariantCulture);
+                    try
+                    {
+                        _notifyIcon.ShowBalloonTip(
+                            4000,
+                            "AI Tools Monitor budget warning",
+                            $"{tool.DisplayName} primary usage has reached {percent}%.",
+                            ToolTipIcon.Warning);
+                    }
+                    catch { /* best effort */ }
+                }
+            }
+        }
+        catch
         {
-            _runningCount = snapshot.RunningCount;
-            _notifyIcon.Icon = TrayIconRenderer.Render(_runningCount);
-            _notifyIcon.Text = _runningCount == 0
-                ? "AI Tools Monitor: idle"
-                : $"AI Tools Monitor: {_runningCount} running";
+            // Best effort - polling must never crash the process
         }
-
-        if (!_firstRunNoticeShown)
-        {
-            _firstRunNoticeShown = true;
-            _notifyIcon.ShowBalloonTip(4000, "AI Tools Monitor",
-                "Running. If you don't see the icon, open the hidden icons arrow and drag it beside the clock.",
-                ToolTipIcon.Info);
-        }
-
-        foreach (var tool in _budgetThresholdTracker.GetNewlyExceededTools(snapshot))
-        {
-            string percent = tool.Quota!.PrimaryPercent!.Value.ToString(
-                "0.#",
-                CultureInfo.InvariantCulture);
-            _notifyIcon.ShowBalloonTip(
-                4000,
-                "AI Tools Monitor budget warning",
-                $"{tool.DisplayName} primary usage has reached {percent}%.",
-                ToolTipIcon.Warning);
-        }
-
     }
 
     private ContextMenuStrip BuildContextMenu()
@@ -134,7 +178,19 @@ public sealed class TrayHost : IDisposable
         recentProjects.DropDownOpening += (_, _) => PopulateRecentProjects(recentProjects);
         PopulateRecentProjects(recentProjects);
         menu.Items.Add(recentProjects);
+
+        // Quick launch submenu
+        var quickLaunch = new ToolStripMenuItem("Quick launch");
+        string[] toolCommands = ["claude", "codex", "opencode", "hermes", "agy"];
+        foreach (var cmd in toolCommands)
+        {
+            quickLaunch.DropDownItems.Add(cmd, null, (_, _) => LaunchTool(cmd));
+        }
+        menu.Items.Add(quickLaunch);
+
+        menu.Items.Add("Edit budget...", null, (_, _) => ShowBudgetEditForm());
         menu.Items.Add("Export usage data...", null, (_, _) => ExportUsageData());
+        menu.Items.Add("Analysis...", null, (_, _) => ShowAnalysisForm());
         menu.Items.Add("Open taskbar settings", null, (_, _) =>
         {
             try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("ms-settings:taskbar") { UseShellExecute = true }); }
@@ -143,6 +199,65 @@ public sealed class TrayHost : IDisposable
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Exit", null, (_, _) => Application.Exit());
         return menu;
+    }
+
+    private void ShowAnalysisForm()
+    {
+        try
+        {
+            if (_analysisForm == null || _analysisForm.IsDisposed)
+            {
+                var engine = new SessionAnalysisEngine(_historyDb);
+                _analysisForm = new AnalysisForm(engine);
+            }
+
+            if (!_analysisForm.Visible)
+            {
+                _analysisForm.Show();
+            }
+            else
+            {
+                _analysisForm.BringToFront();
+                _analysisForm.Activate();
+            }
+        }
+        catch
+        {
+            // Best effort
+        }
+    }
+
+    private void ShowBudgetEditForm()
+    {
+        try
+        {
+            using var form = new BudgetEditForm(_budgetConfig, _anomalyDetector);
+            if (form.ShowDialog(_popup) == DialogResult.OK && form.Saved)
+            {
+                _budgetGuard.ResetTodayNotifications();
+            }
+        }
+        catch
+        {
+            // Best effort
+        }
+    }
+
+    private static void LaunchTool(string command)
+    {
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "cmd.exe",
+                Arguments = $"/k {command}",
+                UseShellExecute = true,
+            });
+        }
+        catch
+        {
+            // Best effort.
+        }
     }
 
     private static void PopulateRecentProjects(ToolStripMenuItem menu)
@@ -218,6 +333,7 @@ public sealed class TrayHost : IDisposable
         _pollTimer.Stop();
         _pollTimer.Dispose();
         _historyDb.Dispose();
+        _analysisForm?.Dispose();
         _notifyIcon.Visible = false;
         _notifyIcon.Dispose();
         _popup.Dispose();

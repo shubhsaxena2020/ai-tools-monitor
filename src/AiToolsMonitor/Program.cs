@@ -7,9 +7,6 @@ internal static class Program
     [STAThread]
     private static void Main()
     {
-        // Tray-only app: no main window, Application.Run() with no form keeps
-        // the message loop alive as long as the tray icon (and its context
-        // menu / popup) exist.
         ApplicationConfiguration.Initialize();
 
         using var mutex = new Mutex(true, "AiToolsMonitor.SingleInstance", out var isFirstInstance);
@@ -20,7 +17,23 @@ internal static class Program
             return;
         }
 
-        using var trayHost = new TrayHost();
-        Application.Run();
+        var context = new TrayApplicationContext();
+        Application.Run(context);
+    }
+}
+
+internal sealed class TrayApplicationContext : ApplicationContext
+{
+    private readonly TrayHost _trayHost;
+
+    public TrayApplicationContext()
+    {
+        _trayHost = new TrayHost();
+        Application.ApplicationExit += OnApplicationExit;
+    }
+
+    private void OnApplicationExit(object? sender, EventArgs e)
+    {
+        _trayHost.Dispose();
     }
 }

@@ -135,6 +135,58 @@ public sealed class HistoryDatabase : IDisposable
         return (0, 0.0);
     }
 
+    /// <summary>
+    /// Returns aggregated usage across all recorded days for each tool.
+    /// </summary>
+    public List<AiToolsMonitor.Analysis.ToolEfficiencyRow> GetToolEfficiencySummary()
+    {
+        var list = new List<AiToolsMonitor.Analysis.ToolEfficiencyRow>();
+        try
+        {
+            var conn = OpenConnection();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = """
+                SELECT tool,
+                       COALESCE(SUM(input_tokens), 0),
+                       COALESCE(SUM(output_tokens), 0),
+                       COALESCE(SUM(cost_usd), 0.0),
+                       COALESCE(SUM(session_count), 0)
+                FROM usage_history
+                GROUP BY tool;
+                """;
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                string toolName = reader.GetString(0);
+                long input = reader.GetInt64(1);
+                long output = reader.GetInt64(2);
+                double cost = reader.GetDouble(3);
+                int sessions = reader.GetInt32(4);
+
+                long totalTokens = input + output;
+                long tokensPerSession = sessions > 0 ? totalTokens / sessions : 0;
+                double costPerSession = sessions > 0 ? cost / sessions : 0.0;
+                double costPer100k = totalTokens > 0 ? (cost / totalTokens) * 100_000.0 : 0.0;
+
+                list.Add(new AiToolsMonitor.Analysis.ToolEfficiencyRow(
+                    toolName,
+                    sessions,
+                    input,
+                    output,
+                    totalTokens,
+                    tokensPerSession,
+                    cost,
+                    costPerSession,
+                    costPer100k));
+            }
+        }
+        catch
+        {
+            // Best effort
+        }
+        return list;
+    }
+
     public void Dispose()
     {
         _connection?.Dispose();
