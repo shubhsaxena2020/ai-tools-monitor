@@ -23,9 +23,7 @@ public sealed class StatusPopup : Form
     private const int HtLeft = 10;
     private const int HtBottomRight = 17;
 
-    private readonly Panel _headerContainer;
-    private readonly Label _headerTitle;
-    private readonly Label _headerSubtitle;
+    private readonly HeaderPanel _headerPanel;
     private readonly FlowLayoutPanel _cardContainer;
     private readonly Panel _footerContainer;
     private readonly Label _lastUpdatedLabel;
@@ -65,34 +63,7 @@ public sealed class StatusPopup : Form
         };
 
         // Header Panel
-        _headerContainer = new Panel
-        {
-            Dock = DockStyle.Top,
-            Height = 65,
-            Padding = new Padding(16, 12, 16, 8),
-            BackColor = Color.Transparent,
-        };
-
-        _headerTitle = new Label
-        {
-            Text = "AI Tools Monitor",
-            Font = new Font("Segoe UI", 12, FontStyle.Bold),
-            AutoSize = true,
-            Location = new Point(16, 10),
-            BackColor = Color.Transparent,
-        };
-
-        _headerSubtitle = new Label
-        {
-            Text = "Live Telemetry & Quota Limits",
-            Font = new Font("Segoe UI", 8.5f, FontStyle.Regular),
-            AutoSize = true,
-            Location = new Point(16, 34),
-            BackColor = Color.Transparent,
-        };
-
-        _headerContainer.Controls.Add(_headerTitle);
-        _headerContainer.Controls.Add(_headerSubtitle);
+        _headerPanel = new HeaderPanel();
 
         // Footer Panel
         _footerContainer = new Panel
@@ -111,6 +82,8 @@ public sealed class StatusPopup : Form
             AutoSize = true,
             TextAlign = ContentAlignment.MiddleLeft,
             BackColor = Color.Transparent,
+            UseMnemonic = false,
+            UseCompatibleTextRendering = false,
         };
 
         _runningCountBadge = new Label
@@ -121,6 +94,8 @@ public sealed class StatusPopup : Form
             AutoSize = true,
             TextAlign = ContentAlignment.MiddleRight,
             BackColor = Color.Transparent,
+            UseMnemonic = false,
+            UseCompatibleTextRendering = false,
         };
 
         _footerContainer.Controls.Add(_lastUpdatedLabel);
@@ -149,8 +124,8 @@ public sealed class StatusPopup : Form
         };
 
         Controls.Add(_cardContainer);
-        Controls.Add(_headerContainer);
         Controls.Add(_footerContainer);
+        Controls.Add(_headerPanel);
 
         ApplyThemeColors();
     }
@@ -335,8 +310,9 @@ public sealed class StatusPopup : Form
         }
 
         ForeColor = _primaryText;
-        _headerTitle.ForeColor = _pinkAccent;
-        _headerSubtitle.ForeColor = _secondaryText;
+        _headerPanel.TitleColor = _pinkAccent;
+        _headerPanel.SubtitleColor = _secondaryText;
+        _headerPanel.Invalidate();
         _lastUpdatedLabel.ForeColor = _secondaryText;
         _runningCountBadge.ForeColor = _pinkAccent;
         _todaySummaryLabel.ForeColor = _pinkAccent;
@@ -362,61 +338,63 @@ public sealed class StatusPopup : Form
     private Panel CreateToolCard(ToolStatus tool)
     {
         bool supportsQuota = tool.Quota is not null;
-        int cardHeight = supportsQuota ? 122 : 62;
+        int cardHeight = supportsQuota ? 120 : 54;
+        int cardWidth = 302;
 
         var card = new GlassCardPanel
         {
-            Width = 308,
+            Width = cardWidth,
             Height = cardHeight,
-            Margin = new Padding(0, 0, 0, 10),
+            Margin = new Padding(0, 0, 0, 8),
             Padding = new Padding(12, 10, 12, 10),
             BackColor = _cardBackground,
             BorderColor = _cardBorder,
         };
 
-        // Header Row: Dot + DisplayName + State + CPU/RAM
-        Color dotColor = tool.State switch
-        {
-            ToolState.Idle => Color.FromArgb(150, 150, 160),
-            ToolState.Quiet => Color.FromArgb(70, 160, 220),
-            ToolState.Active => Color.FromArgb(40, 190, 110),
-            _ => Color.Gray,
-        };
-
-        var headerLayout = new TableLayoutPanel
+        // Header Row Container
+        var headerPanel = new Panel
         {
             Dock = DockStyle.Top,
             Height = 26,
-            ColumnCount = 3,
-            RowCount = 1,
             BackColor = Color.Transparent,
             Margin = Padding.Empty,
             Padding = Padding.Empty,
         };
-        headerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 45));
-        headerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
-        headerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 30));
 
+        // 1. Tool Icon with GDI+ glyph & status dot (20x20)
+        var iconControl = new ToolIconControl
+        {
+            DisplayName = tool.DisplayName,
+            State = tool.State,
+            AccentColor = _pinkAccent,
+            IsDark = _theme.IsDark,
+            Location = new Point(0, 3),
+            Size = new Size(20, 20),
+        };
+
+        // 2. Tool Name
         var nameLabel = new Label
         {
-            Text = "●  " + tool.DisplayName,
+            Text = tool.DisplayName,
             Font = new Font("Segoe UI", 9.5f, FontStyle.Bold),
-            ForeColor = dotColor,
-            Dock = DockStyle.Fill,
-            TextAlign = ContentAlignment.MiddleLeft,
-            BackColor = Color.Transparent,
-        };
-
-        var stateLabel = new Label
-        {
-            Text = tool.State.ToString(),
-            Font = new Font("Segoe UI", 8.5f, FontStyle.Regular),
             ForeColor = _primaryText,
-            Dock = DockStyle.Fill,
+            Location = new Point(26, 1),
+            Size = new Size(118, 24),
             TextAlign = ContentAlignment.MiddleLeft,
+            AutoEllipsis = true,
             BackColor = Color.Transparent,
         };
 
+        // 3. Status Badge Tag
+        var stateBadge = new StatusBadgeTag
+        {
+            State = tool.State,
+            IsDark = _theme.IsDark,
+            Location = new Point(144, 4),
+            Size = new Size(52, 18),
+        };
+
+        // 4. Metrics (CPU / RAM)
         string metricText = tool.State == ToolState.Idle
             ? "--"
             : $"{tool.CpuPercent:0}% · {tool.RamMb:0} MB";
@@ -426,23 +404,26 @@ public sealed class StatusPopup : Form
             Text = metricText,
             Font = new Font("Segoe UI", 8.5f, FontStyle.Regular),
             ForeColor = _secondaryText,
-            Dock = DockStyle.Fill,
+            Location = new Point(196, 1),
+            Size = new Size(82, 24),
             TextAlign = ContentAlignment.MiddleRight,
             BackColor = Color.Transparent,
         };
 
-        headerLayout.Controls.Add(nameLabel, 0, 0);
-        headerLayout.Controls.Add(stateLabel, 1, 0);
-        headerLayout.Controls.Add(metricsLabel, 2, 0);
-        card.Controls.Add(headerLayout);
+        headerPanel.Controls.Add(iconControl);
+        headerPanel.Controls.Add(nameLabel);
+        headerPanel.Controls.Add(stateBadge);
+        headerPanel.Controls.Add(metricsLabel);
+        card.Controls.Add(headerPanel);
 
-        // Quota Section for Codex and Claude Code
+        // Quota Section
         if (supportsQuota)
         {
             var quotaPanel = new Panel
             {
                 Dock = DockStyle.Fill,
-                Margin = new Padding(0, 4, 0, 0),
+                Margin = Padding.Empty,
+                Padding = Padding.Empty,
                 BackColor = Color.Transparent,
             };
 
@@ -476,10 +457,7 @@ public sealed class StatusPopup : Form
 
             bool hasSecondaryWindow = freshness != QuotaFreshness.Live || quota?.SecondaryPercent.HasValue == true;
 
-            // Quota Row 1: primary limit window (label reflects the real
-            // window duration reported by the tool -- do not assume 5h/weekly,
-            // see ai-tools-monitor-autoclose-bug-fixed memory / Codex plan
-            // accounts where the only window is a 7-day one, not 5h).
+            // Row 1: Primary Window / Token Usage (Left) + Freshness Badge (Right)
             var primaryLabel = new Label
             {
                 Text = displaysUsage
@@ -488,7 +466,9 @@ public sealed class StatusPopup : Form
                 Font = new Font("Segoe UI", 8.25f, FontStyle.Bold),
                 ForeColor = _primaryText,
                 Location = new Point(0, 28),
-                AutoSize = true,
+                Size = new Size(198, 18),
+                TextAlign = ContentAlignment.MiddleLeft,
+                AutoEllipsis = true,
                 BackColor = Color.Transparent,
             };
 
@@ -497,30 +477,33 @@ public sealed class StatusPopup : Form
                 Text = $"[{freshnessBadge}]",
                 Font = new Font("Segoe UI", 7.5f, FontStyle.Bold),
                 ForeColor = freshnessColor,
-                Location = new Point(220, 28),
-                AutoSize = true,
+                Location = new Point(200, 28),
+                Size = new Size(78, 18),
+                TextAlign = ContentAlignment.MiddleRight,
                 BackColor = Color.Transparent,
             };
 
-            // Quota Row 2: secondary limit window, if the tool actually reports one.
-            // Some plans (e.g. Codex Plus) only expose a single window -- showing
-            // a fabricated "Weekly: --" row for a window that doesn't exist is
-            // exactly the kind of inaccurate display this was built to avoid.
+            // Row 2: Secondary Window / Usage Details (Left) + Resets In (Right)
             var secondaryLabel = new Label
             {
                 Text = displaysUsage
                     ? FormatUsageDetails(quota)
                     : hasSecondaryWindow
                         ? $"{WindowLabel(quota?.SecondaryWindowMinutes)}:  {secondaryText}"
-                        : "No secondary limit reported",
-                Font = new Font("Segoe UI", 8.25f, FontStyle.Bold),
+                        : "No secondary limit",
+                Font = new Font("Segoe UI", 8.25f, hasSecondaryWindow || displaysUsage ? FontStyle.Bold : FontStyle.Italic),
                 ForeColor = hasSecondaryWindow || displaysUsage ? _primaryText : _secondaryText,
                 Location = new Point(0, 48),
-                AutoSize = true,
+                Size = new Size(155, 18),
+                TextAlign = ContentAlignment.MiddleLeft,
+                AutoEllipsis = true,
                 BackColor = Color.Transparent,
             };
 
-            // Reset time indicator if resetsAt is present
+            quotaPanel.Controls.Add(primaryLabel);
+            quotaPanel.Controls.Add(badgeLabel);
+            quotaPanel.Controls.Add(secondaryLabel);
+
             if (!displaysUsage &&
                 quota?.ResetsAt.HasValue == true &&
                 freshness != QuotaFreshness.Unavailable)
@@ -535,27 +518,24 @@ public sealed class StatusPopup : Form
                     Text = resetStr,
                     Font = new Font("Segoe UI", 7.5f, FontStyle.Italic),
                     ForeColor = _secondaryText,
-                    Location = new Point(180, 48),
-                    AutoSize = true,
+                    Location = new Point(156, 48),
+                    Size = new Size(122, 18),
+                    TextAlign = ContentAlignment.MiddleRight,
                     BackColor = Color.Transparent,
                 };
                 quotaPanel.Controls.Add(resetLabel);
             }
 
-            quotaPanel.Controls.Add(primaryLabel);
-            quotaPanel.Controls.Add(badgeLabel);
-            quotaPanel.Controls.Add(secondaryLabel);
-
             if (!displaysUsage)
             {
-                // Quota Usage Bar (drawn based on primary limit)
                 var progressBar = new QuotaProgressBar
                 {
                     Location = new Point(0, 68),
-                    Size = new Size(284, 6),
+                    Size = new Size(278, 7),
                     ValuePercent = quota?.PrimaryPercent ?? 0,
                     BarColor = _pinkAccent,
                     Freshness = freshness,
+                    IsDark = _theme.IsDark,
                 };
                 quotaPanel.Controls.Add(progressBar);
             }
@@ -769,30 +749,70 @@ public sealed class StatusPopup : Form
 }
 
 /// <summary>
-/// Custom glass card panel control with subtle border drawing.
+/// Custom glass card panel control with subtle rounded border drawing and glass highlight.
 /// </summary>
 internal sealed class GlassCardPanel : Panel
 {
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public Color BorderColor { get; set; } = Color.FromArgb(90, 230, 170, 195);
 
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public int CornerRadius { get; set; } = 8;
+
     public GlassCardPanel()
     {
-        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
+        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.SupportsTransparentBackColor, true);
+        BackColor = Color.Transparent;
     }
 
     protected override void OnPaint(PaintEventArgs e)
     {
         base.OnPaint(e);
-        using var pen = new Pen(BorderColor, 1f);
-        var rect = new Rectangle(0, 0, Width - 1, Height - 1);
         e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        e.Graphics.DrawRectangle(pen, rect);
+
+        if (Width <= 0 || Height <= 0) return;
+
+        var rect = new Rectangle(0, 0, Width - 1, Height - 1);
+        using var path = CreateRoundedRectanglePath(rect, CornerRadius);
+
+        using (var bgBrush = new SolidBrush(BackColor))
+        {
+            e.Graphics.FillPath(bgBrush, path);
+        }
+
+        using (var borderPen = new Pen(BorderColor, 1f))
+        {
+            e.Graphics.DrawPath(borderPen, path);
+        }
+
+        using (var highlightPen = new Pen(Color.FromArgb(40, 255, 255, 255), 1f))
+        {
+            e.Graphics.DrawLine(highlightPen, rect.X + CornerRadius, rect.Y + 1, rect.Right - CornerRadius, rect.Y + 1);
+        }
+    }
+
+    private static GraphicsPath CreateRoundedRectanglePath(Rectangle rect, int radius)
+    {
+        var path = new GraphicsPath();
+        int d = Math.Min(radius * 2, Math.Min(rect.Width, rect.Height));
+        if (d <= 0)
+        {
+            path.AddRectangle(rect);
+            return path;
+        }
+
+        path.AddArc(rect.X, rect.Y, d, d, 180, 90);
+        path.AddArc(rect.Right - d, rect.Y, d, d, 270, 90);
+        path.AddArc(rect.Right - d, rect.Bottom - d, d, d, 0, 90);
+        path.AddArc(rect.X, rect.Bottom - d, d, d, 90, 90);
+        path.CloseFigure();
+
+        return path;
     }
 }
 
 /// <summary>
-/// Lightweight custom progress bar for quota percentage.
+/// Lightweight custom progress bar with rounded pill caps and gradient fill for quota percentage.
 /// </summary>
 internal sealed class QuotaProgressBar : Control
 {
@@ -804,6 +824,9 @@ internal sealed class QuotaProgressBar : Control
 
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public QuotaFreshness Freshness { get; set; }
+
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public bool IsDark { get; set; }
 
     public QuotaProgressBar()
     {
@@ -818,23 +841,351 @@ internal sealed class QuotaProgressBar : Control
         base.OnPaint(e);
         e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
 
-        var trackRect = new Rectangle(0, 0, Width, Height);
-        using var trackBrush = new SolidBrush(Color.FromArgb(50, 180, 180, 190));
-        e.Graphics.FillRectangle(trackBrush, trackRect);
+        if (Width <= 0 || Height <= 0) return;
+
+        var rect = new Rectangle(0, 0, Width - 1, Height - 1);
+        int radius = Math.Max(2, Height / 2);
+
+        // Track background
+        using var trackPath = CreateRoundedRectanglePath(rect, radius);
+        Color trackColor = IsDark
+            ? Color.FromArgb(40, 200, 200, 220)
+            : Color.FromArgb(30, 0, 0, 0);
+        using var trackBrush = new SolidBrush(trackColor);
+        e.Graphics.FillPath(trackBrush, trackPath);
 
         if (Freshness != QuotaFreshness.Unavailable && ValuePercent > 0)
         {
-            int fillWidth = (int)Math.Clamp(Width * (ValuePercent / 100.0), 4, Width);
-            var fillRect = new Rectangle(0, 0, fillWidth, Height);
+            double clampedPercent = Math.Clamp(ValuePercent, 0, 100);
+            int fillWidth = Math.Max(radius * 2, (int)(rect.Width * (clampedPercent / 100.0)));
+            fillWidth = Math.Min(fillWidth, rect.Width);
+
+            var fillRect = new Rectangle(rect.X, rect.Y, fillWidth, rect.Height);
+            using var fillPath = CreateRoundedRectanglePath(fillRect, radius);
 
             Color colorToUse = Freshness switch
             {
                 QuotaFreshness.Stale => Color.FromArgb(220, 140, 30),
-                _ => BarColor
+                _ => clampedPercent switch
+                {
+                    > 92 => Color.FromArgb(225, 45, 70),   // High usage red/rose
+                    > 80 => Color.FromArgb(240, 120, 40),  // Warning amber/coral
+                    _ => BarColor                          // Pink accent
+                }
             };
 
-            using var fillBrush = new SolidBrush(colorToUse);
-            e.Graphics.FillRectangle(fillBrush, fillRect);
+            Color colorBrighter = Color.FromArgb(
+                colorToUse.A,
+                Math.Min(255, colorToUse.R + 35),
+                Math.Min(255, colorToUse.G + 35),
+                Math.Min(255, colorToUse.B + 35));
+
+            using var fillBrush = new LinearGradientBrush(fillRect, colorToUse, colorBrighter, LinearGradientMode.Horizontal);
+            e.Graphics.FillPath(fillBrush, fillPath);
+
+            // Subtle 1px top highlight line inside fill path for glass polish
+            using var highlightPen = new Pen(Color.FromArgb(70, 255, 255, 255), 1f);
+            e.Graphics.DrawLine(highlightPen, fillRect.X + radius, fillRect.Y + 1, fillRect.Right - radius, fillRect.Y + 1);
         }
     }
+
+    private static GraphicsPath CreateRoundedRectanglePath(Rectangle rect, int radius)
+    {
+        var path = new GraphicsPath();
+        int d = Math.Min(radius * 2, Math.Min(rect.Width, rect.Height));
+        if (d <= 0)
+        {
+            path.AddRectangle(rect);
+            return path;
+        }
+
+        path.AddArc(rect.X, rect.Y, d, d, 180, 90);
+        path.AddArc(rect.Right - d, rect.Y, d, d, 270, 90);
+        path.AddArc(rect.Right - d, rect.Bottom - d, d, d, 0, 90);
+        path.AddArc(rect.X, rect.Bottom - d, d, d, 90, 90);
+        path.CloseFigure();
+
+        return path;
+    }
 }
+
+/// <summary>
+/// Renders tool-specific GDI+ vector glyphs alongside a status dot badge.
+/// </summary>
+internal sealed class ToolIconControl : Control
+{
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public string DisplayName { get; set; } = string.Empty;
+
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public ToolState State { get; set; } = ToolState.Idle;
+
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public Color AccentColor { get; set; } = Color.FromArgb(235, 75, 130);
+
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public bool IsDark { get; set; }
+
+    public ToolIconControl()
+    {
+        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.SupportsTransparentBackColor, true);
+        SetStyle(ControlStyles.Selectable, false);
+        TabStop = false;
+        BackColor = Color.Transparent;
+        Size = new Size(20, 20);
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e);
+        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+
+        var iconRect = new Rectangle(0, 2, 14, 14);
+        DrawToolGlyph(e.Graphics, DisplayName, iconRect, AccentColor);
+
+        Color dotColor = State switch
+        {
+            ToolState.Active => Color.FromArgb(34, 197, 94),
+            ToolState.Quiet => Color.FromArgb(245, 158, 11),
+            ToolState.Idle => IsDark ? Color.FromArgb(160, 160, 175) : Color.FromArgb(130, 130, 140),
+            _ => Color.Gray
+        };
+
+        int dotSize = 5;
+        int dotX = 13;
+        int dotY = 13;
+
+        if (State == ToolState.Active || State == ToolState.Quiet)
+        {
+            using var glowBrush = new SolidBrush(Color.FromArgb(60, dotColor));
+            e.Graphics.FillEllipse(glowBrush, dotX - 1, dotY - 1, dotSize + 2, dotSize + 2);
+            using var dotBrush = new SolidBrush(dotColor);
+            e.Graphics.FillEllipse(dotBrush, dotX, dotY, dotSize, dotSize);
+        }
+        else
+        {
+            using var pen = new Pen(dotColor, 1.2f);
+            e.Graphics.DrawEllipse(pen, dotX, dotY, dotSize, dotSize);
+        }
+    }
+
+    private static void DrawToolGlyph(Graphics g, string displayName, Rectangle rect, Color accent)
+    {
+        string name = displayName.ToLowerInvariant();
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+
+        if (name.Contains("claude"))
+        {
+            float cx = rect.X + rect.Width / 2f;
+            float cy = rect.Y + rect.Height / 2f;
+            float outerR = rect.Width / 2f - 0.5f;
+            float innerR = outerR * 0.35f;
+
+            PointF[] points = new PointF[8];
+            for (int i = 0; i < 8; i++)
+            {
+                double angle = i * Math.PI / 4.0 - Math.PI / 2.0;
+                float r = (i % 2 == 0) ? outerR : innerR;
+                points[i] = new PointF(
+                    cx + (float)(r * Math.Cos(angle)),
+                    cy + (float)(r * Math.Sin(angle)));
+            }
+            using var path = new GraphicsPath();
+            path.AddPolygon(points);
+            using var brush = new SolidBrush(accent);
+            g.FillPath(brush, path);
+        }
+        else if (name.Contains("hermes"))
+        {
+            using var pen = new Pen(accent, 1.4f);
+            float cx = rect.X + rect.Width / 2f;
+            float cy = rect.Y + rect.Height / 2f;
+
+            g.DrawArc(pen, rect.X + 0.5f, rect.Y + 2f, 6.5f, 9.5f, 130, 190);
+            g.DrawArc(pen, rect.X + 7f, rect.Y + 2f, 6.5f, 9.5f, 220, 190);
+
+            using var brush = new SolidBrush(accent);
+            PointF[] diamond = [
+                new PointF(cx, cy - 3.5f),
+                new PointF(cx + 2.5f, cy),
+                new PointF(cx, cy + 3.5f),
+                new PointF(cx - 2.5f, cy)
+            ];
+            g.FillPolygon(brush, diamond);
+        }
+        else if (name.Contains("codex"))
+        {
+            using var pen = new Pen(accent, 1.25f);
+            float cx = rect.X + rect.Width / 2f;
+            float cy = rect.Y + rect.Height / 2f;
+            float r = 4.2f;
+
+            g.DrawEllipse(pen, cx - r, cy - r, r * 2, r * 2);
+            g.DrawEllipse(pen, cx - r + 1.8f, cy - r - 1.2f, r * 2, r * 2);
+            g.DrawEllipse(pen, cx - r - 1.8f, cy - r - 1.2f, r * 2, r * 2);
+        }
+        else if (name.Contains("opencode"))
+        {
+            using var pen = new Pen(accent, 1.3f);
+            var frame = new RectangleF(rect.X + 0.5f, rect.Y + 1f, 13f, 12f);
+            using var path = CreateRoundedPathF(frame, 2.5f);
+            g.DrawPath(pen, path);
+
+            g.DrawLines(pen, [
+                new PointF(rect.X + 3.5f, rect.Y + 4.5f),
+                new PointF(rect.X + 6.2f, rect.Y + 7.0f),
+                new PointF(rect.X + 3.5f, rect.Y + 9.5f)
+            ]);
+            g.DrawLine(pen, rect.X + 7.8f, rect.Y + 9.5f, rect.X + 11.0f, rect.Y + 9.5f);
+        }
+        else if (name.Contains("antigravity"))
+        {
+            using var pen = new Pen(accent, 1.3f);
+            float cx = rect.X + rect.Width / 2f;
+
+            PointF[] tri = [
+                new PointF(rect.X + 2.5f, rect.Y + 3f),
+                new PointF(rect.X + 11.5f, rect.Y + 3f),
+                new PointF(cx, rect.Y + 11f)
+            ];
+            g.DrawPolygon(pen, tri);
+            g.DrawEllipse(pen, rect.X, rect.Y + 5.5f, 14f, 4.5f);
+        }
+        else
+        {
+            using var pen = new Pen(accent, 1.4f);
+            g.DrawEllipse(pen, rect.X + 1, rect.Y + 1, rect.Width - 2, rect.Height - 2);
+        }
+    }
+
+    private static GraphicsPath CreateRoundedPathF(RectangleF rect, float radius)
+    {
+        var path = new GraphicsPath();
+        float d = radius * 2f;
+        path.AddArc(rect.X, rect.Y, d, d, 180, 90);
+        path.AddArc(rect.Right - d, rect.Y, d, d, 270, 90);
+        path.AddArc(rect.Right - d, rect.Bottom - d, d, d, 0, 90);
+        path.AddArc(rect.X, rect.Bottom - d, d, d, 90, 90);
+        path.CloseFigure();
+        return path;
+    }
+}
+
+/// <summary>
+/// Renders a styled status pill badge with soft background fill and theme-aware contrast text.
+/// </summary>
+internal sealed class StatusBadgeTag : Control
+{
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public ToolState State { get; set; } = ToolState.Idle;
+
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public bool IsDark { get; set; }
+
+    public StatusBadgeTag()
+    {
+        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.SupportsTransparentBackColor, true);
+        SetStyle(ControlStyles.Selectable, false);
+        TabStop = false;
+        BackColor = Color.Transparent;
+        Size = new Size(52, 18);
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e);
+        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+
+        if (Width <= 0 || Height <= 0) return;
+
+        (Color textColor, Color bgFill) = (State, IsDark) switch
+        {
+            (ToolState.Active, true) => (Color.FromArgb(74, 222, 128), Color.FromArgb(45, 20, 80, 40)),
+            (ToolState.Active, false) => (Color.FromArgb(22, 128, 61), Color.FromArgb(30, 34, 197, 94)),
+            (ToolState.Quiet, true) => (Color.FromArgb(251, 191, 36), Color.FromArgb(45, 80, 55, 10)),
+            (ToolState.Quiet, false) => (Color.FromArgb(180, 105, 10), Color.FromArgb(30, 245, 158, 11)),
+            (ToolState.Idle, true) => (Color.FromArgb(160, 160, 175), Color.FromArgb(35, 70, 70, 80)),
+            (ToolState.Idle, false) => (Color.FromArgb(110, 110, 125), Color.FromArgb(25, 140, 140, 150)),
+            _ => (Color.Gray, Color.FromArgb(20, 128, 128, 128))
+        };
+
+        var rect = new Rectangle(0, 0, Width - 1, Height - 1);
+        using var path = CreateRoundedPath(rect, 4);
+
+        using (var bgBrush = new SolidBrush(bgFill))
+        {
+            e.Graphics.FillPath(bgBrush, path);
+        }
+
+        using (var borderPen = new Pen(Color.FromArgb(70, textColor), 1f))
+        {
+            e.Graphics.DrawPath(borderPen, path);
+        }
+
+        string text = State.ToString().ToUpperInvariant();
+        using var font = new Font("Segoe UI", 7f, FontStyle.Bold);
+        using var textBrush = new SolidBrush(textColor);
+        using var sf = new StringFormat
+        {
+            Alignment = StringAlignment.Center,
+            LineAlignment = StringAlignment.Center
+        };
+
+        e.Graphics.DrawString(text, font, textBrush, rect, sf);
+    }
+
+    private static GraphicsPath CreateRoundedPath(Rectangle rect, int radius)
+    {
+        var path = new GraphicsPath();
+        int d = Math.Min(radius * 2, Math.Min(rect.Width, rect.Height));
+        if (d <= 0)
+        {
+            path.AddRectangle(rect);
+            return path;
+        }
+
+        path.AddArc(rect.X, rect.Y, d, d, 180, 90);
+        path.AddArc(rect.Right - d, rect.Y, d, d, 270, 90);
+        path.AddArc(rect.Right - d, rect.Bottom - d, d, d, 0, 90);
+        path.AddArc(rect.X, rect.Bottom - d, d, d, 90, 90);
+        path.CloseFigure();
+        return path;
+    }
+}
+
+/// <summary>
+/// Custom header panel control rendering anti-aliased title and subtitle text on glass background.
+/// </summary>
+internal sealed class HeaderPanel : Panel
+{
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public Color TitleColor { get; set; } = Color.FromArgb(245, 110, 160);
+
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public Color SubtitleColor { get; set; } = Color.FromArgb(190, 160, 175);
+
+    public HeaderPanel()
+    {
+        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.SupportsTransparentBackColor, true);
+        Dock = DockStyle.Top;
+        Height = 82;
+        BackColor = Color.Transparent;
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e);
+        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        e.Graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+
+        using var titleFont = new Font("Segoe UI", 12.5f, FontStyle.Bold);
+        using var titleBrush = new SolidBrush(TitleColor);
+        e.Graphics.DrawString("AI Tools Monitor", titleFont, titleBrush, new PointF(16, 28));
+
+        using var subFont = new Font("Segoe UI", 8.5f, FontStyle.Regular);
+        using var subBrush = new SolidBrush(SubtitleColor);
+        e.Graphics.DrawString("Live Telemetry & Quota Limits", subFont, subBrush, new PointF(16, 52));
+    }
+}
+
+
