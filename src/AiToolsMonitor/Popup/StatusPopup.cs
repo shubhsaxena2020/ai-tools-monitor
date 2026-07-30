@@ -755,6 +755,8 @@ internal sealed class QuotaProgressBar : Control
     public QuotaProgressBar()
     {
         SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.SupportsTransparentBackColor, true);
+        SetStyle(ControlStyles.Selectable, false);
+        TabStop = false;
         BackColor = Color.Transparent;
     }
 
