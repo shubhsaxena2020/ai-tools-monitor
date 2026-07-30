@@ -605,7 +605,7 @@ public sealed class MainShellForm : Form
         else if (control is DataGridView grid)
         {
             grid.BackgroundColor = cardSurface;
-            grid.GridColor = palette.CardBorder;
+            grid.GridColor = Color.FromArgb(255, palette.CardBorder);
             grid.DefaultCellStyle.BackColor = cardSurface;
             grid.DefaultCellStyle.ForeColor = palette.PrimaryText;
             grid.DefaultCellStyle.SelectionBackColor =
