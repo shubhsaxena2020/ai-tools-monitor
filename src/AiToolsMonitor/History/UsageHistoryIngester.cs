@@ -7,6 +7,7 @@ namespace AiToolsMonitor.History;
 /// <summary>
 /// Reads Claude Code JSONL transcripts, Hermes SQLite, and OpenCode SQLite,
 /// then upserts today's aggregated usage into HistoryDatabase.
+/// Also detects Claude Code session boundaries and stores them in session_history.
 /// Throttled to run at most once every 5 minutes.
 /// </summary>
 public sealed class UsageHistoryIngester
@@ -50,6 +51,7 @@ public sealed class UsageHistoryIngester
         string today = utcNow.ToString("yyyy-MM-dd");
 
         IngestClaudeCode(today);
+        IngestClaudeCodeSessions();
         IngestHermes(today, utcNow);
         IngestOpenCode(today, utcNow);
 
@@ -62,22 +64,151 @@ public sealed class UsageHistoryIngester
         {
             if (!Directory.Exists(_claudeProjectsRoot)) return;
 
-            // Reuse the same approach as ClaudeCodeQuotaReader: find the newest
-            // JSONL transcript, read all lines, but sum today's usage instead
-            // of taking only the last assistant message.
-            var transcript = Directory
+            var transcripts = Directory
                 .EnumerateFiles(_claudeProjectsRoot, "*.jsonl", SearchOption.AllDirectories)
                 .Select(p => new FileInfo(p))
-                .OrderByDescending(f => f.LastWriteTimeUtc)
-                .FirstOrDefault();
+                .OrderByDescending(f => f.LastWriteTimeUtc);
 
-            if (transcript is null) return;
+            foreach (var transcript in transcripts)
+            {
+                long inputTokens = 0;
+                long outputTokens = 0;
 
-            long inputTokens = 0;
-            long outputTokens = 0;
+                using var stream = new FileStream(
+                    transcript.FullName, FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.ReadWrite | FileShare.Delete);
+                using var reader = new StreamReader(stream);
 
+                while (reader.ReadLine() is { } line)
+                {
+                    if (string.IsNullOrWhiteSpace(line)) continue;
+                    try
+                    {
+                        using var doc = JsonDocument.Parse(line);
+                        var root = doc.RootElement;
+
+                        if (!root.TryGetProperty("type", out var type) ||
+                            type.GetString() != "assistant")
+                            continue;
+
+                        if (!root.TryGetProperty("timestamp", out var ts) ||
+                            ts.ValueKind != JsonValueKind.String ||
+                            !DateTimeOffset.TryParse(ts.GetString(),
+                                CultureInfo.InvariantCulture,
+                                DateTimeStyles.AssumeUniversal,
+                                out var parsed) ||
+                            parsed.ToUniversalTime().ToString("yyyy-MM-dd") != today)
+                            continue;
+
+                        if (root.TryGetProperty("message", out var msg) &&
+                            msg.TryGetProperty("usage", out var usage))
+                        {
+                            inputTokens += GetTokenCount(usage, "input_tokens");
+                            outputTokens += GetTokenCount(usage, "output_tokens");
+                        }
+                    }
+                    catch (JsonException) { }
+                }
+
+                if (inputTokens > 0 || outputTokens > 0)
+                    _db.UpsertDailyAggregate("Claude Code", today,
+                        inputTokens, outputTokens, 0, 1);
+            }
+        }
+        catch { }
+    }
+
+    /// <summary>
+    /// Parses all Claude Code JSONL transcripts and upserts session boundaries
+    /// (first/last message timestamp per session ID) into session_history.
+    /// </summary>
+    private void IngestClaudeCodeSessions()
+    {
+        try
+        {
+            if (!Directory.Exists(_claudeProjectsRoot)) return;
+
+            var transcripts = Directory
+                .EnumerateFiles(_claudeProjectsRoot, "*.jsonl", SearchOption.AllDirectories)
+                .Select(p => new FileInfo(p));
+
+            foreach (var transcript in transcripts)
+            {
+                // Skip subagent files — those are not top-level sessions
+                if (transcript.DirectoryName != null &&
+                    transcript.DirectoryName.Contains("subagents"))
+                    continue;
+
+                var sessionMessages = new Dictionary<string, List<DateTimeOffset>>();
+
+                using var stream = new FileStream(
+                    transcript.FullName, FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.ReadWrite | FileShare.Delete);
+                using var reader = new StreamReader(stream);
+
+                while (reader.ReadLine() is { } line)
+                {
+                    if (string.IsNullOrWhiteSpace(line)) continue;
+                    try
+                    {
+                        using var doc = JsonDocument.Parse(line);
+                        var root = doc.RootElement;
+
+                        if (!root.TryGetProperty("timestamp", out var ts) ||
+                            ts.ValueKind != JsonValueKind.String ||
+                            !DateTimeOffset.TryParse(ts.GetString(),
+                                CultureInfo.InvariantCulture,
+                                DateTimeStyles.AssumeUniversal,
+                                out var parsed))
+                            continue;
+
+                        string? sessionId = null;
+                        if (root.TryGetProperty("sessionId", out var sid) &&
+                            sid.ValueKind == JsonValueKind.String)
+                            sessionId = sid.GetString();
+
+                        if (string.IsNullOrEmpty(sessionId))
+                            continue;
+
+                        if (!sessionMessages.ContainsKey(sessionId))
+                            sessionMessages[sessionId] = new List<DateTimeOffset>();
+
+                        sessionMessages[sessionId].Add(parsed);
+                    }
+                    catch (JsonException) { }
+                }
+
+                // For each session found in this file, compute boundaries and total tokens
+                foreach (var (sessionId, timestamps) in sessionMessages)
+                {
+                    if (timestamps.Count == 0) continue;
+
+                    var first = timestamps.Min();
+                    var last = timestamps.Max();
+
+                    // Now re-read the file to sum tokens for this session
+                    long totalTokens = SumTokensForSession(transcript.FullName, sessionId);
+
+                    _db.UpsertSession(
+                        sessionId, "Claude Code",
+                        first.ToString("o"), last.ToString("o"),
+                        totalTokens);
+                }
+            }
+        }
+        catch { }
+    }
+
+    /// <summary>Sums input+output tokens for assistant messages belonging to a specific session.</summary>
+    private static long SumTokensForSession(string filePath, string sessionId)
+    {
+        long total = 0;
+        try
+        {
             using var stream = new FileStream(
-                transcript.FullName, FileMode.Open,
+                filePath, FileMode.Open,
                 FileAccess.Read,
                 FileShare.ReadWrite | FileShare.Delete);
             using var reader = new StreamReader(stream);
@@ -90,34 +221,26 @@ public sealed class UsageHistoryIngester
                     using var doc = JsonDocument.Parse(line);
                     var root = doc.RootElement;
 
-                    if (!root.TryGetProperty("type", out var type) ||
-                        type.GetString() != "assistant")
+                    if (root.TryGetProperty("sessionId", out var sid) &&
+                        sid.GetString() != sessionId)
                         continue;
 
-                    if (!root.TryGetProperty("timestamp", out var ts) ||
-                        ts.ValueKind != JsonValueKind.String ||
-                        !DateTimeOffset.TryParse(ts.GetString(),
-                            CultureInfo.InvariantCulture,
-                            DateTimeStyles.AssumeUniversal,
-                            out var parsed) ||
-                        parsed.ToUniversalTime().ToString("yyyy-MM-dd") != today)
+                    if (!root.TryGetProperty("type", out var type) ||
+                        type.GetString() != "assistant")
                         continue;
 
                     if (root.TryGetProperty("message", out var msg) &&
                         msg.TryGetProperty("usage", out var usage))
                     {
-                        inputTokens += GetTokenCount(usage, "input_tokens");
-                        outputTokens += GetTokenCount(usage, "output_tokens");
+                        total += GetTokenCount(usage, "input_tokens");
+                        total += GetTokenCount(usage, "output_tokens");
                     }
                 }
                 catch (JsonException) { }
             }
-
-            if (inputTokens > 0 || outputTokens > 0)
-                _db.UpsertDailyAggregate("Claude Code", today,
-                    inputTokens, outputTokens, 0, 1);
         }
         catch { }
+        return total;
     }
 
     private void IngestHermes(string today, DateTime utcNow)

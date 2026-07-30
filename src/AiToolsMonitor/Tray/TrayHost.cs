@@ -4,6 +4,7 @@ using AiToolsMonitor.Export;
 using AiToolsMonitor.Monitoring;
 using AiToolsMonitor.Popup;
 using AiToolsMonitor.History;
+using AiToolsMonitor.History.Views;
 using AiToolsMonitor.Projects;
 
 namespace AiToolsMonitor.Tray;
@@ -135,6 +136,7 @@ public sealed class TrayHost : IDisposable
         PopulateRecentProjects(recentProjects);
         menu.Items.Add(recentProjects);
         menu.Items.Add("Export usage data...", null, (_, _) => ExportUsageData());
+        menu.Items.Add("Usage history...", null, (_, _) => OpenUsageHistory());
         menu.Items.Add("Open taskbar settings", null, (_, _) =>
         {
             try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("ms-settings:taskbar") { UseShellExecute = true }); }
@@ -175,6 +177,19 @@ public sealed class TrayHost : IDisposable
         catch
         {
             // Best effort.
+        }
+    }
+
+    private void OpenUsageHistory()
+    {
+        try
+        {
+            using var form = new UsageHistoryForm(_historyDb);
+            form.ShowDialog();
+        }
+        catch
+        {
+            // Best effort — never crash the app
         }
     }
 
