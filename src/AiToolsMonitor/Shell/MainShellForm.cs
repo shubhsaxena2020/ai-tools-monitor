@@ -200,7 +200,6 @@ public sealed class MainShellForm : Form
         };
 
         ApplyShellTheme();
-        NavigateTo(ShellPage.Dashboard);
     }
 
     public ShellPage SelectedPage => _selectedPage;
