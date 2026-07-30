@@ -348,7 +348,7 @@ public sealed class StatusPopup : Form
 
     private Panel CreateToolCard(ToolStatus tool)
     {
-        bool supportsQuota = tool.DisplayName is "Codex" or "Claude Code";
+        bool supportsQuota = tool.Quota is not null;
         int cardHeight = supportsQuota ? 122 : 62;
 
         var card = new GlassCardPanel
@@ -435,6 +435,7 @@ public sealed class StatusPopup : Form
 
             var quota = tool.Quota;
             QuotaFreshness freshness = quota?.Freshness ?? QuotaFreshness.Unavailable;
+            bool displaysUsage = quota?.DisplayKind == QuotaDisplayKind.Usage;
 
             string primaryText = quota?.PrimaryPercent.HasValue == true
                 ? $"{quota.PrimaryPercent.Value:0}%"
@@ -463,7 +464,9 @@ public sealed class StatusPopup : Form
             // Quota Row 1: 5-Hr Limit
             var primaryLabel = new Label
             {
-                Text = $"5-Hr Limit:  {primaryText}",
+                Text = displaysUsage
+                    ? $"Input: {FormatTokenCount(quota?.InputTokens)}  Output: {FormatTokenCount(quota?.OutputTokens)}"
+                    : $"5-Hr Limit:  {primaryText}",
                 Font = new Font("Segoe UI", 8.25f, FontStyle.Bold),
                 ForeColor = _primaryText,
                 Location = new Point(0, 28),
@@ -484,7 +487,9 @@ public sealed class StatusPopup : Form
             // Quota Row 2: Weekly Limit
             var secondaryLabel = new Label
             {
-                Text = $"Weekly:       {secondaryText}",
+                Text = displaysUsage
+                    ? FormatUsageDetails(quota)
+                    : $"Weekly:       {secondaryText}",
                 Font = new Font("Segoe UI", 8.25f, FontStyle.Bold),
                 ForeColor = _primaryText,
                 Location = new Point(0, 48),
@@ -493,7 +498,9 @@ public sealed class StatusPopup : Form
             };
 
             // Reset time indicator if resetsAt is present
-            if (quota?.ResetsAt.HasValue == true && freshness != QuotaFreshness.Unavailable)
+            if (!displaysUsage &&
+                quota?.ResetsAt.HasValue == true &&
+                freshness != QuotaFreshness.Unavailable)
             {
                 var remaining = quota.ResetsAt.Value - DateTimeOffset.UtcNow;
                 string resetStr = remaining.TotalMinutes > 0
@@ -512,26 +519,50 @@ public sealed class StatusPopup : Form
                 quotaPanel.Controls.Add(resetLabel);
             }
 
-            // Quota Usage Bar (drawn based on primary limit)
-            var progressBar = new QuotaProgressBar
-            {
-                Location = new Point(0, 68),
-                Size = new Size(284, 6),
-                ValuePercent = quota?.PrimaryPercent ?? 0,
-                BarColor = _pinkAccent,
-                Freshness = freshness,
-            };
-
             quotaPanel.Controls.Add(primaryLabel);
             quotaPanel.Controls.Add(badgeLabel);
             quotaPanel.Controls.Add(secondaryLabel);
-            quotaPanel.Controls.Add(progressBar);
+
+            if (!displaysUsage)
+            {
+                // Quota Usage Bar (drawn based on primary limit)
+                var progressBar = new QuotaProgressBar
+                {
+                    Location = new Point(0, 68),
+                    Size = new Size(284, 6),
+                    ValuePercent = quota?.PrimaryPercent ?? 0,
+                    BarColor = _pinkAccent,
+                    Freshness = freshness,
+                };
+                quotaPanel.Controls.Add(progressBar);
+            }
 
             card.Controls.Add(quotaPanel);
             quotaPanel.BringToFront();
         }
 
         return card;
+    }
+
+    private static string FormatUsageDetails(ToolQuota? quota)
+    {
+        string total = FormatTokenCount(quota?.TotalTokens);
+        return quota?.CostUsd.HasValue == true
+            ? $"Total: {total}  Cost: ${quota.CostUsd.Value:0.0000}"
+            : $"Total: {total}";
+    }
+
+    private static string FormatTokenCount(long? tokens)
+    {
+        if (!tokens.HasValue)
+            return "--";
+
+        return tokens.Value switch
+        {
+            >= 1_000_000 => $"{tokens.Value / 1_000_000d:0.#}M",
+            >= 1_000 => $"{tokens.Value / 1_000d:0.#}K",
+            _ => tokens.Value.ToString()
+        };
     }
 
     public void ShowNearTray()

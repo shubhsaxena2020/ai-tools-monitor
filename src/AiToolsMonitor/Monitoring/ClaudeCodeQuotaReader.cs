@@ -1,99 +1,133 @@
+using System.Globalization;
 using System.Text.Json;
 
 namespace AiToolsMonitor.Monitoring;
 
 public static class ClaudeCodeQuotaReader
 {
-    private static readonly string CaptureFilePath = Path.Combine(
+    private static readonly string ProjectsRoot = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-        "ai-monitor",
-        "statusline-capture.jsonl");
+        ".claude",
+        "projects");
+
+    private static readonly TimeSpan LiveThreshold = TimeSpan.FromMinutes(15);
 
     public static ToolQuota GetQuota()
     {
+        return GetQuota(ProjectsRoot, DateTimeOffset.UtcNow);
+    }
+
+    public static ToolQuota GetQuota(string projectsRoot, DateTimeOffset now)
+    {
         try
         {
-            if (!File.Exists(CaptureFilePath))
+            if (!Directory.Exists(projectsRoot))
+                return Unavailable();
+
+            var transcript = Directory
+                .EnumerateFiles(projectsRoot, "*.jsonl", SearchOption.AllDirectories)
+                .Select(path => new FileInfo(path))
+                .OrderByDescending(file => file.LastWriteTimeUtc)
+                .FirstOrDefault();
+
+            if (transcript is null)
+                return Unavailable();
+
+            long inputTokens = 0;
+            long outputTokens = 0;
+            long cacheTokens = 0;
+            DateTimeOffset? observedAt = null;
+            bool foundUsage = false;
+
+            using var stream = new FileStream(
+                transcript.FullName,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete);
+            using var reader = new StreamReader(stream);
+
+            while (reader.ReadLine() is { } line)
             {
-                return new ToolQuota(null, null, null, QuotaFreshness.Unavailable);
+                if (string.IsNullOrWhiteSpace(line))
+                    continue;
+
+                try
+                {
+                    using var document = JsonDocument.Parse(line);
+                    var root = document.RootElement;
+
+                    if (!root.TryGetProperty("type", out var type) ||
+                        type.GetString() != "assistant" ||
+                        !root.TryGetProperty("message", out var message) ||
+                        !message.TryGetProperty("usage", out var usage))
+                    {
+                        continue;
+                    }
+
+                    foundUsage = true;
+                    inputTokens = GetTokenCount(usage, "input_tokens");
+                    outputTokens = GetTokenCount(usage, "output_tokens");
+                    cacheTokens =
+                        GetTokenCount(usage, "cache_read_input_tokens") +
+                        GetTokenCount(usage, "cache_creation_input_tokens");
+
+                    if (root.TryGetProperty("timestamp", out var timestamp) &&
+                        timestamp.ValueKind == JsonValueKind.String &&
+                        DateTimeOffset.TryParse(
+                            timestamp.GetString(),
+                            CultureInfo.InvariantCulture,
+                            DateTimeStyles.AssumeUniversal,
+                            out var parsedTimestamp))
+                    {
+                        observedAt = parsedTimestamp;
+                    }
+                }
+                catch (JsonException)
+                {
+                    // The active transcript can end with a partially written line.
+                }
             }
 
-            var fileInfo = new FileInfo(CaptureFilePath);
-            var age = DateTime.UtcNow - fileInfo.LastWriteTimeUtc;
+            if (!foundUsage)
+                return Unavailable();
 
-            string[] lines = File.ReadAllLines(CaptureFilePath);
-            string? lastLine = lines.LastOrDefault(l => !string.IsNullOrWhiteSpace(l));
-
-            if (string.IsNullOrWhiteSpace(lastLine))
-            {
-                return new ToolQuota(null, null, null, QuotaFreshness.Unavailable);
-            }
-
-            // Each line is "<ISO 8601 timestamp> <raw json>", not JSON on its own.
-            int jsonStart = lastLine.IndexOf('{');
-            if (jsonStart < 0)
-            {
-                return new ToolQuota(null, null, null, QuotaFreshness.Unavailable);
-            }
-
-            using var doc = JsonDocument.Parse(lastLine[jsonStart..]);
-            var root = doc.RootElement;
-
-            if (!root.TryGetProperty("rate_limits", out var rateLimits) ||
-                rateLimits.ValueKind != JsonValueKind.Object)
-            {
-                return new ToolQuota(null, null, null, QuotaFreshness.Unavailable);
-            }
-
-            double? primaryPct = ExtractUsedPercentage(rateLimits, "five_hour");
-            double? secondaryPct = ExtractUsedPercentage(rateLimits, "seven_day");
-            DateTimeOffset? resetsAt =
-                ExtractResetsAt(rateLimits, "five_hour") ??
-                ExtractResetsAt(rateLimits, "seven_day");
-
-            if (!primaryPct.HasValue && !secondaryPct.HasValue)
-            {
-                return new ToolQuota(null, null, null, QuotaFreshness.Unavailable);
-            }
-
-            QuotaFreshness freshness = age > TimeSpan.FromHours(1)
+            var age = now.UtcDateTime - transcript.LastWriteTimeUtc;
+            var freshness = age > LiveThreshold
                 ? QuotaFreshness.Stale
-                : age > TimeSpan.FromMinutes(15)
-                    ? QuotaFreshness.Stale
-                    : QuotaFreshness.Live;
+                : QuotaFreshness.Live;
 
-            return new ToolQuota(primaryPct, secondaryPct, resetsAt, freshness);
+            return new ToolQuota(
+                null,
+                null,
+                null,
+                freshness,
+                InputTokens: inputTokens,
+                OutputTokens: outputTokens,
+                CacheTokens: cacheTokens,
+                ObservedAt: observedAt,
+                DisplayKind: QuotaDisplayKind.Usage);
         }
         catch
         {
-            return new ToolQuota(null, null, null, QuotaFreshness.Unavailable);
+            return Unavailable();
         }
     }
 
-    private static double? ExtractUsedPercentage(JsonElement rateLimits, string bucket)
+    private static long GetTokenCount(JsonElement usage, string propertyName)
     {
-        if (rateLimits.TryGetProperty(bucket, out var b) &&
-            b.ValueKind == JsonValueKind.Object &&
-            b.TryGetProperty("used_percentage", out var val) &&
-            val.TryGetDouble(out var d))
-        {
-            return d;
-        }
-        return null;
+        return usage.TryGetProperty(propertyName, out var value) &&
+               value.TryGetInt64(out var tokens)
+            ? tokens
+            : 0;
     }
 
-    private static DateTimeOffset? ExtractResetsAt(JsonElement rateLimits, string bucket)
+    private static ToolQuota Unavailable()
     {
-        if (rateLimits.TryGetProperty(bucket, out var b) &&
-            b.ValueKind == JsonValueKind.Object &&
-            b.TryGetProperty("resets_at", out var val))
-        {
-            if (val.ValueKind == JsonValueKind.Number && val.TryGetInt64(out var sec))
-                return DateTimeOffset.FromUnixTimeSeconds(sec);
-
-            if (val.ValueKind == JsonValueKind.String && DateTimeOffset.TryParse(val.GetString(), out var dto))
-                return dto;
-        }
-        return null;
+        return new ToolQuota(
+            null,
+            null,
+            null,
+            QuotaFreshness.Unavailable,
+            DisplayKind: QuotaDisplayKind.Usage);
     }
 }

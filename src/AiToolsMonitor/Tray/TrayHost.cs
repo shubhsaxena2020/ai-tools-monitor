@@ -57,12 +57,16 @@ public sealed class TrayHost : IDisposable
 
         var codexTask = CodexQuotaClient.GetQuotaAsync();
         var claudeQuota = ClaudeCodeQuotaReader.GetQuota();
+        var hermesQuota = HermesQuotaClient.GetQuota();
+        var openCodeQuota = OpenCodeQuotaClient.GetQuota();
         var codexQuota = await codexTask;
 
         var enrichedTools = rawSnapshot.Tools.Select(t =>
         {
             if (t.DisplayName == "Codex") return t with { Quota = codexQuota };
             if (t.DisplayName == "Claude Code") return t with { Quota = claudeQuota };
+            if (t.DisplayName == "Hermes Agent") return t with { Quota = hermesQuota };
+            if (t.DisplayName == "OpenCode") return t with { Quota = openCodeQuota };
             return t;
         }).ToList();
 
