@@ -461,12 +461,17 @@ public sealed class StatusPopup : Form
                 _ => Color.Gray
             };
 
-            // Quota Row 1: 5-Hr Limit
+            bool hasSecondaryWindow = freshness != QuotaFreshness.Live || quota?.SecondaryPercent.HasValue == true;
+
+            // Quota Row 1: primary limit window (label reflects the real
+            // window duration reported by the tool -- do not assume 5h/weekly,
+            // see ai-tools-monitor-autoclose-bug-fixed memory / Codex plan
+            // accounts where the only window is a 7-day one, not 5h).
             var primaryLabel = new Label
             {
                 Text = displaysUsage
                     ? $"Input: {FormatTokenCount(quota?.InputTokens)}  Output: {FormatTokenCount(quota?.OutputTokens)}"
-                    : $"5-Hr Limit:  {primaryText}",
+                    : $"{WindowLabel(quota?.PrimaryWindowMinutes)}:  {primaryText}",
                 Font = new Font("Segoe UI", 8.25f, FontStyle.Bold),
                 ForeColor = _primaryText,
                 Location = new Point(0, 28),
@@ -484,14 +489,19 @@ public sealed class StatusPopup : Form
                 BackColor = Color.Transparent,
             };
 
-            // Quota Row 2: Weekly Limit
+            // Quota Row 2: secondary limit window, if the tool actually reports one.
+            // Some plans (e.g. Codex Plus) only expose a single window -- showing
+            // a fabricated "Weekly: --" row for a window that doesn't exist is
+            // exactly the kind of inaccurate display this was built to avoid.
             var secondaryLabel = new Label
             {
                 Text = displaysUsage
                     ? FormatUsageDetails(quota)
-                    : $"Weekly:       {secondaryText}",
+                    : hasSecondaryWindow
+                        ? $"{WindowLabel(quota?.SecondaryWindowMinutes)}:  {secondaryText}"
+                        : "No secondary limit reported",
                 Font = new Font("Segoe UI", 8.25f, FontStyle.Bold),
-                ForeColor = _primaryText,
+                ForeColor = hasSecondaryWindow || displaysUsage ? _primaryText : _secondaryText,
                 Location = new Point(0, 48),
                 AutoSize = true,
                 BackColor = Color.Transparent,
@@ -542,6 +552,22 @@ public sealed class StatusPopup : Form
         }
 
         return card;
+    }
+
+    private static string WindowLabel(int? minutes)
+    {
+        if (!minutes.HasValue)
+            return "Limit";
+
+        double hours = minutes.Value / 60.0;
+        return minutes.Value switch
+        {
+            <= 360 => $"{hours:0.#}h Limit",
+            <= 1560 => $"{hours:0}h Limit",
+            <= 10500 => "Weekly Limit",
+            <= 46000 => "Monthly Limit",
+            _ => $"{hours:0}h Limit"
+        };
     }
 
     private static string FormatUsageDetails(ToolQuota? quota)

@@ -46,6 +46,8 @@ public static class CodexQuotaClient
 
             double? primaryPct = null;
             double? secondaryPct = null;
+            int? primaryWindowMins = null;
+            int? secondaryWindowMins = null;
             DateTimeOffset? resetsAt = null;
             bool success = false;
 
@@ -64,8 +66,8 @@ public static class CodexQuotaClient
                         {
                             if (result.TryGetProperty("rateLimits", out var rateLimits) && rateLimits.ValueKind == JsonValueKind.Object)
                             {
-                                ParseLimitObject(rateLimits, "primary", ref primaryPct, ref resetsAt);
-                                ParseLimitObject(rateLimits, "secondary", ref secondaryPct, ref resetsAt);
+                                ParseLimitObject(rateLimits, "primary", ref primaryPct, ref primaryWindowMins, ref resetsAt);
+                                ParseLimitObject(rateLimits, "secondary", ref secondaryPct, ref secondaryWindowMins, ref resetsAt);
                                 success = true;
                                 break;
                             }
@@ -87,7 +89,13 @@ public static class CodexQuotaClient
 
             if (success && (primaryPct.HasValue || secondaryPct.HasValue))
             {
-                return new ToolQuota(primaryPct, secondaryPct, resetsAt, QuotaFreshness.Live);
+                return new ToolQuota(
+                    primaryPct,
+                    secondaryPct,
+                    resetsAt,
+                    QuotaFreshness.Live,
+                    PrimaryWindowMinutes: primaryWindowMins,
+                    SecondaryWindowMinutes: secondaryWindowMins);
             }
 
             return new ToolQuota(null, null, null, QuotaFreshness.Unavailable);
@@ -98,7 +106,7 @@ public static class CodexQuotaClient
         }
     }
 
-    private static void ParseLimitObject(JsonElement parent, string propName, ref double? pct, ref DateTimeOffset? resetsAt)
+    private static void ParseLimitObject(JsonElement parent, string propName, ref double? pct, ref int? windowMinutes, ref DateTimeOffset? resetsAt)
     {
         if (parent.TryGetProperty(propName, out var limitObj) && limitObj.ValueKind == JsonValueKind.Object)
         {
@@ -109,6 +117,11 @@ public static class CodexQuotaClient
             else if (limitObj.TryGetProperty("used_percent", out var uVal2) && uVal2.TryGetDouble(out var uVal2Num))
             {
                 pct = uVal2Num;
+            }
+
+            if (limitObj.TryGetProperty("windowDurationMins", out var windowProp) && windowProp.TryGetInt32(out var windowVal))
+            {
+                windowMinutes = windowVal;
             }
 
             if (!resetsAt.HasValue && limitObj.TryGetProperty("resetsAt", out var resetsProp))

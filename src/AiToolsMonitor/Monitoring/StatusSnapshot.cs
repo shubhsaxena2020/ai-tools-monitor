@@ -17,7 +17,9 @@ public sealed record ToolQuota(
     long? ReasoningTokens = null,
     double? CostUsd = null,
     DateTimeOffset? ObservedAt = null,
-    QuotaDisplayKind DisplayKind = QuotaDisplayKind.Percentage
+    QuotaDisplayKind DisplayKind = QuotaDisplayKind.Percentage,
+    int? PrimaryWindowMinutes = null,
+    int? SecondaryWindowMinutes = null
 )
 {
     public long? TotalTokens =>
