@@ -68,6 +68,7 @@ public sealed class TrayHost : IDisposable
         _pollTimer.Start();
 
         _edgeSidebar = new EdgeSidebarTab();
+        _edgeSidebar.Show();
 
         Poll(); // first sample immediately so the dashboard isn't empty on first open
     }

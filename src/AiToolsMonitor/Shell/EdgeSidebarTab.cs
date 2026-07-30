@@ -73,6 +73,7 @@ public sealed class EdgeSidebarTab : Form
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         TopMost = true;
+        Text = "AI Tools Monitor Edge Sidebar";
         StartPosition = FormStartPosition.Manual;
         BackColor = Color.Black;
 
