@@ -5,24 +5,22 @@ using AiToolsMonitor.Export;
 using AiToolsMonitor.Monitoring;
 using AiToolsMonitor.Popup;
 using AiToolsMonitor.History;
-using AiToolsMonitor.History.Views;
 using AiToolsMonitor.Projects;
-using AiToolsMonitor.Reports;
-
-using AiToolsMonitor.Analysis;
+using AiToolsMonitor.Shell;
 
 namespace AiToolsMonitor.Tray;
 
 /// <summary>
 /// Owns the NotifyIcon and wires the click behavior specified in PRD FR-4:
-/// left-click toggles the popup (deliberate deviation from pystray's
+/// left-click opens or focuses the main shell (deliberate deviation from pystray's
 /// right-click-only default -- that convention mismatch was the root cause
 /// of the prototype "not working" complaint), right-click shows the menu.
 /// </summary>
 public sealed class TrayHost : IDisposable
 {
     private readonly NotifyIcon _notifyIcon;
-    private readonly StatusPopup _popup = new();
+    private readonly StatusPopup _popup;
+    private readonly MainShellForm _mainShell;
     private readonly System.Windows.Forms.Timer _pollTimer;
     private readonly ProcessEnumerator _enumerator = new();
     private readonly BudgetThresholdTracker _budgetThresholdTracker = new();
@@ -30,15 +28,27 @@ public sealed class TrayHost : IDisposable
     private int _runningCount = -1;
     private bool _firstRunNoticeShown;
     private readonly HistoryDatabase _historyDb = new();
-    private UsageHistoryIngester _ingester = null!;
-    private AnalysisForm? _analysisForm;
+    private readonly UsageHistoryIngester _ingester;
     private readonly BudgetConfig _budgetConfig;
     private readonly BudgetGuard _budgetGuard;
     private readonly CostAnomalyDetector _anomalyDetector;
-    private CostReportForm? _costReport;
 
     public TrayHost()
     {
+        _historyDb.EnsureCreated();
+        _ingester = new UsageHistoryIngester(_historyDb);
+        _budgetConfig = BudgetConfig.Load();
+        _budgetGuard = new BudgetGuard(_budgetConfig, _historyDb);
+        _anomalyDetector = new CostAnomalyDetector(_historyDb);
+
+        _popup = new StatusPopup(embedded: true);
+        _mainShell = new MainShellForm(
+            _popup,
+            _historyDb,
+            _budgetConfig,
+            _anomalyDetector,
+            () => _budgetGuard.ResetTodayNotifications());
+
         _notifyIcon = new NotifyIcon
         {
             Icon = TrayIconRenderer.Render(0),
@@ -56,21 +66,14 @@ public sealed class TrayHost : IDisposable
         _pollTimer.Tick += (_, _) => Poll();
         _pollTimer.Start();
 
-        _historyDb.EnsureCreated();
-        _ingester = new UsageHistoryIngester(_historyDb);
-        _budgetConfig = BudgetConfig.Load();
-        _budgetGuard = new BudgetGuard(_budgetConfig, _historyDb);
-        _anomalyDetector = new CostAnomalyDetector(_historyDb);
-
-        Poll(); // first sample immediately so the popup isn't empty on first open
+        Poll(); // first sample immediately so the dashboard isn't empty on first open
     }
 
     private void OnTrayMouseUp(object? sender, MouseEventArgs e)
     {
         if (e.Button == MouseButtons.Left)
         {
-            if (_popup.Visible) _popup.Hide();
-            else _popup.ShowNearTray();
+            _mainShell.ShowPage(ShellPage.Dashboard);
         }
         // Right-click is handled natively by ContextMenuStrip assignment above.
     }
@@ -175,7 +178,7 @@ public sealed class TrayHost : IDisposable
     private ContextMenuStrip BuildContextMenu()
     {
         var menu = new ContextMenuStrip();
-        menu.Items.Add("Open", null, (_, _) => _popup.ShowNearTray());
+        menu.Items.Add("Open", null, (_, _) => _mainShell.ShowPage(ShellPage.Dashboard));
         menu.Items.Add("Refresh now", null, (_, _) => Poll());
         var recentProjects = new ToolStripMenuItem("Recent Projects");
         recentProjects.DropDownOpening += (_, _) => PopulateRecentProjects(recentProjects);
@@ -210,21 +213,7 @@ public sealed class TrayHost : IDisposable
     {
         try
         {
-            if (_analysisForm == null || _analysisForm.IsDisposed)
-            {
-                var engine = new SessionAnalysisEngine(_historyDb);
-                _analysisForm = new AnalysisForm(engine);
-            }
-
-            if (!_analysisForm.Visible)
-            {
-                _analysisForm.Show();
-            }
-            else
-            {
-                _analysisForm.BringToFront();
-                _analysisForm.Activate();
-            }
+            _mainShell.ShowPage(ShellPage.Analysis);
         }
         catch
         {
@@ -236,11 +225,7 @@ public sealed class TrayHost : IDisposable
     {
         try
         {
-            using var form = new BudgetEditForm(_budgetConfig, _anomalyDetector);
-            if (form.ShowDialog(_popup) == DialogResult.OK && form.Saved)
-            {
-                _budgetGuard.ResetTodayNotifications();
-            }
+            _mainShell.ShowPage(ShellPage.Budget);
         }
         catch
         {
@@ -269,16 +254,7 @@ public sealed class TrayHost : IDisposable
     {
         try
         {
-            if (_costReport is { IsDisposed: false })
-            {
-                _costReport.Show();
-                _costReport.Activate();
-                return;
-            }
-
-            _costReport = new CostReportForm(_historyDb);
-            _costReport.FormClosed += (_, _) => _costReport = null;
-            _costReport.Show();
+            _mainShell.ShowPage(ShellPage.CostReport);
         }
         catch
         {
@@ -323,8 +299,7 @@ public sealed class TrayHost : IDisposable
     {
         try
         {
-            using var form = new UsageHistoryForm(_historyDb);
-            form.ShowDialog();
+            _mainShell.ShowPage(ShellPage.UsageHistory);
         }
         catch
         {
@@ -347,7 +322,10 @@ public sealed class TrayHost : IDisposable
             FileName = $"ai-tools-usage-{DateTime.Now:yyyyMMdd-HHmmss}.csv",
         };
 
-        if (dialog.ShowDialog(_popup) != DialogResult.OK)
+        DialogResult result = _mainShell.Visible
+            ? dialog.ShowDialog(_mainShell)
+            : dialog.ShowDialog();
+        if (result != DialogResult.OK)
             return;
 
         try
@@ -371,11 +349,9 @@ public sealed class TrayHost : IDisposable
     {
         _pollTimer.Stop();
         _pollTimer.Dispose();
+        _mainShell.Dispose();
         _historyDb.Dispose();
-        _analysisForm?.Dispose();
-        _costReport?.Dispose();
         _notifyIcon.Visible = false;
         _notifyIcon.Dispose();
-        _popup.Dispose();
     }
 }

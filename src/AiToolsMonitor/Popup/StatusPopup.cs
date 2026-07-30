@@ -1,5 +1,4 @@
 using AiToolsMonitor.Monitoring;
-using Microsoft.Win32;
 using System.ComponentModel;
 using System.Drawing.Drawing2D;
 using System.Runtime.InteropServices;
@@ -29,6 +28,7 @@ public sealed class StatusPopup : Form
     private readonly Label _lastUpdatedLabel;
     private readonly Label _runningCountBadge;
     private readonly Label _todaySummaryLabel;
+    private readonly bool _embedded;
 
     private ThemeSettings _theme;
     private BackdropMode _backdropMode;
@@ -39,14 +39,16 @@ public sealed class StatusPopup : Form
     private Color _pinkAccent;
     private Color _fallbackSurface;
 
-    public StatusPopup()
+    public StatusPopup(bool embedded = false)
     {
-        _theme = ReadThemeSettings();
+        _embedded = embedded;
+        _theme = ThemeSettings.Read();
 
         FormBorderStyle = FormBorderStyle.None;
         StartPosition = FormStartPosition.Manual;
         ShowInTaskbar = false;
-        TopMost = true;
+        TopMost = !embedded;
+        TopLevel = !embedded;
 
         Opacity = 1.0;
         BackColor = Color.Black;
@@ -54,7 +56,8 @@ public sealed class StatusPopup : Form
 
         DoubleBuffered = false;
 
-        Deactivate += (_, _) => Hide();
+        if (!embedded)
+            Deactivate += (_, _) => Hide();
         KeyPreview = true;
         KeyDown += (_, e) =>
         {
@@ -135,10 +138,13 @@ public sealed class StatusPopup : Form
         get
         {
             CreateParams cp = base.CreateParams;
-            cp.Style |= WsCaption | WsThickFrame;
-            cp.ExStyle |= WsExToolWindow;
-            cp.ExStyle &= ~WsExLayered;
-            cp.ClassStyle |= CsDropShadow;
+            if (!_embedded)
+            {
+                cp.Style |= WsCaption | WsThickFrame;
+                cp.ExStyle |= WsExToolWindow;
+                cp.ExStyle &= ~WsExLayered;
+                cp.ClassStyle |= CsDropShadow;
+            }
             return cp;
         }
     }
@@ -146,13 +152,22 @@ public sealed class StatusPopup : Form
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
-        _theme = ReadThemeSettings();
+        _theme = ThemeSettings.Read();
         ApplyThemeColors();
-        ApplyBackdrop();
+        if (_embedded)
+            BackColor = _fallbackSurface;
+        else
+            ApplyBackdrop();
     }
 
     protected override void WndProc(ref Message m)
     {
+        if (_embedded)
+        {
+            base.WndProc(ref m);
+            return;
+        }
+
         if (m.Msg == WmNcCalcSize && m.WParam != nint.Zero)
         {
             m.Result = nint.Zero;
@@ -279,35 +294,13 @@ public sealed class StatusPopup : Form
 
     private void ApplyThemeColors()
     {
-        if (_theme.HighContrast)
-        {
-            _fallbackSurface = SystemColors.Window;
-            _primaryText = SystemColors.WindowText;
-            _secondaryText = SystemColors.GrayText;
-            _cardBackground = SystemColors.Control;
-            _cardBorder = SystemColors.WindowFrame;
-            _pinkAccent = SystemColors.Highlight;
-        }
-        else if (_theme.IsDark)
-        {
-            // Dark Plum & Pink Glass palette
-            _fallbackSurface = Color.FromArgb(0x1C, 0x14, 0x1A);
-            _primaryText = Color.FromArgb(0xFA, 0xEB, 0xF2);
-            _secondaryText = Color.FromArgb(0xBE, 0xA0, 0xAF);
-            _cardBackground = Color.FromArgb(140, 42, 30, 40);
-            _cardBorder = Color.FromArgb(70, 180, 100, 130);
-            _pinkAccent = Color.FromArgb(0xF5, 0x6E, 0xA0);
-        }
-        else
-        {
-            // Pink & White Glassmorphism palette
-            _fallbackSurface = Color.FromArgb(0xFF, 0xF5, 0xF8);
-            _primaryText = Color.FromArgb(0x2D, 0x14, 0x23);
-            _secondaryText = Color.FromArgb(0x6E, 0x46, 0x5A);
-            _cardBackground = Color.FromArgb(180, 255, 255, 255);
-            _cardBorder = Color.FromArgb(90, 230, 170, 195);
-            _pinkAccent = Color.FromArgb(0xEB, 0x4B, 0x82);
-        }
+        ThemePalette palette = _theme.Palette;
+        _fallbackSurface = palette.FallbackSurface;
+        _primaryText = palette.PrimaryText;
+        _secondaryText = palette.SecondaryText;
+        _cardBackground = palette.CardBackground;
+        _cardBorder = palette.CardBorder;
+        _pinkAccent = palette.PinkAccent;
 
         ForeColor = _primaryText;
         _headerPanel.TitleColor = _pinkAccent;
@@ -316,6 +309,16 @@ public sealed class StatusPopup : Form
         _lastUpdatedLabel.ForeColor = _secondaryText;
         _runningCountBadge.ForeColor = _pinkAccent;
         _todaySummaryLabel.ForeColor = _pinkAccent;
+    }
+
+    internal void ApplyTheme(ThemeSettings theme)
+    {
+        _theme = theme;
+        ApplyThemeColors();
+        BackColor = _embedded || _backdropMode == BackdropMode.None
+            ? _fallbackSurface
+            : Color.Black;
+        Invalidate(true);
     }
 
     public void Render(StatusSnapshot snapshot)
@@ -600,7 +603,10 @@ public sealed class StatusPopup : Form
 
     public void ShowNearTray()
     {
-        ThemeSettings currentTheme = ReadThemeSettings();
+        if (_embedded)
+            return;
+
+        ThemeSettings currentTheme = ThemeSettings.Read();
 
         if (currentTheme != _theme)
         {
@@ -617,20 +623,6 @@ public sealed class StatusPopup : Form
 
         Show();
         Activate();
-    }
-
-    private static ThemeSettings ReadThemeSettings()
-    {
-        const string path = @"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";
-        using RegistryKey? key = Registry.CurrentUser.OpenSubKey(path);
-
-        bool isLight = key?.GetValue("AppsUseLightTheme") is int light ? light != 0 : true;
-        bool transparencyEnabled = key?.GetValue("EnableTransparency") is not int transparency || transparency != 0;
-
-        return new ThemeSettings(
-            IsDark: !isLight,
-            TransparencyEnabled: transparencyEnabled,
-            HighContrast: SystemInformation.HighContrast);
     }
 
     private static int ToColorRef(Color color)
@@ -652,11 +644,6 @@ public sealed class StatusPopup : Form
         SystemAcrylic,
         LegacyAccent,
     }
-
-    private readonly record struct ThemeSettings(
-        bool IsDark,
-        bool TransparencyEnabled,
-        bool HighContrast);
 
     private enum DwmWindowAttribute
     {
