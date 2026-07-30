@@ -45,3 +45,42 @@ Turn this into something closer to a real app:
 - Launch the app for real, screenshot the new shell and the edge sidebar via computer-use,
   click through every sidebar nav item and confirm real data (not placeholders).
 - No regression: right-click tray menu items (Quick launch, Recent Projects, Export) still work.
+
+## Status: DONE (2026-07-30) — live-verified, pushed
+
+Both workstreams built, merged, and live-verified by actually launching the rebuilt app and
+clicking through every page (not just a green build). Three real bugs were found this way and
+fixed, plus one visual non-issue ruled out:
+
+1. **EdgeSidebarTab never appeared at all** — the form was fully built but `Show()` was never
+   called anywhere. Fixed directly; the code review had missed this because a hidden-but-real
+   Win32 window vs. no window at all look identical from a code read.
+2. **MainShellForm never became visible on tray click** — `ShowPage()` correctly called
+   `Show()`, but the constructor's own premature `NavigateTo(ShellPage.Dashboard)` (populating
+   the Dashboard page before the form's own handle existed) left the form in a state where
+   `Show()` silently no-opped. Root-caused and fixed by Antigravity in an isolated worktree,
+   with a new Win32-level regression test (`PopupTests.cs`) that asserts both `.Visible` and
+   the real `IsWindowVisible` Win32 call — a plain `.Visible` assertion would not have caught
+   the original bug.
+3. **Crash on Analysis / Cost Report / Usage History pages** — `DataGridView.GridColor` was
+   set to a semi-transparent palette color (`palette.CardBorder`) as part of the glassmorphism
+   theme; WinForms throws `ArgumentException` for any non-opaque `GridColor`. Fixed by forcing
+   alpha=255 only for that one property.
+4. Not a bug: a page title that looked like "Settinas" instead of "Settings" in a screenshot
+   turned out to be a font-rendering artifact at small size — the source string was already
+   correct.
+
+**Process note on my own mistake:** the first bugfix (`EdgeSidebarTab.Show()`) was made directly
+in the main repo's working tree and not committed before two new bugfix worktrees were branched
+from `HEAD` — both worktrees inherited the still-broken code and had to re-discover the same
+missing-`Show()` bug independently before finding their own real (different) bugs. Lesson: commit
+a hotfix before branching new work from the same commit, even mid-session.
+
+All fixes independently rebuilt/retested by me (not just trusted from the delegate's report),
+then live-clicked through every one of the 6 sidebar pages after the final merge. Final state:
+90/90 tests passing, pushed to `github.com/shubhsaxena2020/ai-tools-monitor` at commit `16d1475`.
+
+**Known minor follow-up, not blocking:** the edge sidebar's auto-retract-on-mouse-leave felt
+noticeably slower than the documented 400ms grace period in real testing (it did eventually
+retract, just not as snappy as designed) — worth a closer look later but not worth delaying
+this delivery over.
