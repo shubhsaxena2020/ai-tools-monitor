@@ -10,6 +10,7 @@ using AiToolsMonitor.Projects;
 using AiToolsMonitor.Reports;
 
 using AiToolsMonitor.Analysis;
+using AiToolsMonitor.Shell;
 
 namespace AiToolsMonitor.Tray;
 
@@ -36,6 +37,7 @@ public sealed class TrayHost : IDisposable
     private readonly BudgetGuard _budgetGuard;
     private readonly CostAnomalyDetector _anomalyDetector;
     private CostReportForm? _costReport;
+    private readonly EdgeSidebarTab _edgeSidebar;
 
     public TrayHost()
     {
@@ -61,6 +63,7 @@ public sealed class TrayHost : IDisposable
         _budgetConfig = BudgetConfig.Load();
         _budgetGuard = new BudgetGuard(_budgetConfig, _historyDb);
         _anomalyDetector = new CostAnomalyDetector(_historyDb);
+        _edgeSidebar = new EdgeSidebarTab();
 
         Poll(); // first sample immediately so the popup isn't empty on first open
     }
@@ -100,12 +103,14 @@ public sealed class TrayHost : IDisposable
             var snapshot = new StatusSnapshot(enrichedTools, rawSnapshot.SampledAtUtc);
             _currentSnapshot = snapshot;
             _popup.Render(snapshot);
+            _edgeSidebar.Render(snapshot);
 
             try
             {
                 _ingester.Ingest();
                 var (tokens, cost) = _historyDb.GetTodaySummary();
                 _popup.UpdateTodaySummary(tokens, cost);
+                _edgeSidebar.UpdateTodaySummary(tokens, cost);
             }
             catch { /* best effort — history ingestion must never crash the app */ }
 
@@ -377,5 +382,6 @@ public sealed class TrayHost : IDisposable
         _notifyIcon.Visible = false;
         _notifyIcon.Dispose();
         _popup.Dispose();
+        _edgeSidebar.Dispose();
     }
 }
