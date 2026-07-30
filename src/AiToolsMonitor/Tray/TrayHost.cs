@@ -32,6 +32,7 @@ public sealed class TrayHost : IDisposable
     private readonly BudgetConfig _budgetConfig;
     private readonly BudgetGuard _budgetGuard;
     private readonly CostAnomalyDetector _anomalyDetector;
+    private readonly EdgeSidebarTab _edgeSidebar;
 
     public TrayHost()
     {
@@ -65,6 +66,8 @@ public sealed class TrayHost : IDisposable
         _pollTimer = new System.Windows.Forms.Timer { Interval = 2500 };
         _pollTimer.Tick += (_, _) => Poll();
         _pollTimer.Start();
+
+        _edgeSidebar = new EdgeSidebarTab();
 
         Poll(); // first sample immediately so the dashboard isn't empty on first open
     }
@@ -103,12 +106,14 @@ public sealed class TrayHost : IDisposable
             var snapshot = new StatusSnapshot(enrichedTools, rawSnapshot.SampledAtUtc);
             _currentSnapshot = snapshot;
             _popup.Render(snapshot);
+            _edgeSidebar.Render(snapshot);
 
             try
             {
                 _ingester.Ingest();
                 var (tokens, cost) = _historyDb.GetTodaySummary();
                 _popup.UpdateTodaySummary(tokens, cost);
+                _edgeSidebar.UpdateTodaySummary(tokens, cost);
             }
             catch { /* best effort — history ingestion must never crash the app */ }
 
@@ -353,5 +358,6 @@ public sealed class TrayHost : IDisposable
         _historyDb.Dispose();
         _notifyIcon.Visible = false;
         _notifyIcon.Dispose();
+        _edgeSidebar.Dispose();
     }
 }
