@@ -2,6 +2,24 @@ using Microsoft.Data.Sqlite;
 
 namespace AiToolsMonitor.History;
 
+public sealed record ModelUsageSummary(
+    string Tool,
+    string Model,
+    long InputTokens,
+    long OutputTokens,
+    double CostUsd,
+    bool PricingKnown)
+{
+    public long TotalTokens => InputTokens + OutputTokens;
+
+    public double? CostPerMillionTokens =>
+        PricingKnown && TotalTokens > 0
+            ? CostUsd / TotalTokens * 1_000_000d
+            : null;
+}
+
+public sealed record DailyCostTotal(string Date, double CostUsd);
+
 /// <summary>
 /// Owns the local history.db that preserves usage data beyond Claude Code's
 /// 30-day session deletion. One row per (tool, date) aggregate.
@@ -40,6 +58,17 @@ public sealed class HistoryDatabase : IDisposable
                     session_count INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY (date, tool)
                 );
+
+                CREATE TABLE IF NOT EXISTS model_usage_history (
+                    date TEXT NOT NULL,
+                    tool TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    input_tokens INTEGER NOT NULL DEFAULT 0,
+                    output_tokens INTEGER NOT NULL DEFAULT 0,
+                    cost_usd REAL NOT NULL DEFAULT 0,
+                    pricing_known INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (date, tool, model)
+                );
                 """;
             cmd.ExecuteNonQuery();
         }
@@ -47,6 +76,125 @@ public sealed class HistoryDatabase : IDisposable
         {
             // Best effort — never crash the app
         }
+    }
+
+    /// <summary>
+    /// Inserts or replaces one model's daily aggregate for a tool.
+    /// Idempotent: safe to call every poll tick.
+    /// </summary>
+    public void UpsertModelDailyAggregate(
+        string tool,
+        string model,
+        string date,
+        long inputTokens,
+        long outputTokens,
+        double costUsd,
+        bool pricingKnown)
+    {
+        try
+        {
+            var conn = OpenConnection();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = """
+                INSERT INTO model_usage_history
+                    (date, tool, model, input_tokens, output_tokens, cost_usd, pricing_known)
+                VALUES
+                    (@date, @tool, @model, @inputTokens, @outputTokens, @costUsd, @pricingKnown)
+                ON CONFLICT(date, tool, model) DO UPDATE SET
+                    input_tokens = @inputTokens,
+                    output_tokens = @outputTokens,
+                    cost_usd = @costUsd,
+                    pricing_known = @pricingKnown;
+                """;
+            cmd.Parameters.AddWithValue("@date", date);
+            cmd.Parameters.AddWithValue("@tool", tool);
+            cmd.Parameters.AddWithValue("@model", model);
+            cmd.Parameters.AddWithValue("@inputTokens", inputTokens);
+            cmd.Parameters.AddWithValue("@outputTokens", outputTokens);
+            cmd.Parameters.AddWithValue("@costUsd", costUsd);
+            cmd.Parameters.AddWithValue("@pricingKnown", pricingKnown ? 1 : 0);
+            cmd.ExecuteNonQuery();
+        }
+        catch
+        {
+            // Best effort
+        }
+    }
+
+    public IReadOnlyList<ModelUsageSummary> GetModelUsage(
+        string startDate,
+        string endDate)
+    {
+        var results = new List<ModelUsageSummary>();
+        try
+        {
+            var conn = OpenConnection();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = """
+                SELECT
+                    tool,
+                    model,
+                    COALESCE(SUM(input_tokens), 0),
+                    COALESCE(SUM(output_tokens), 0),
+                    COALESCE(SUM(cost_usd), 0.0),
+                    MIN(pricing_known)
+                FROM model_usage_history
+                WHERE date >= @startDate AND date <= @endDate
+                GROUP BY tool, model
+                ORDER BY cost_usd DESC, model;
+                """;
+            cmd.Parameters.AddWithValue("@startDate", startDate);
+            cmd.Parameters.AddWithValue("@endDate", endDate);
+
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                results.Add(new ModelUsageSummary(
+                    reader.GetString(0),
+                    reader.GetString(1),
+                    reader.GetInt64(2),
+                    reader.GetInt64(3),
+                    reader.GetDouble(4),
+                    reader.GetInt64(5) != 0));
+            }
+        }
+        catch
+        {
+            // Best effort
+        }
+
+        return results;
+    }
+
+    public IReadOnlyList<DailyCostTotal> GetDailyModelCosts(
+        string startDate,
+        string endDate)
+    {
+        var results = new List<DailyCostTotal>();
+        try
+        {
+            var conn = OpenConnection();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = """
+                SELECT date, COALESCE(SUM(cost_usd), 0.0)
+                FROM model_usage_history
+                WHERE date >= @startDate AND date <= @endDate
+                GROUP BY date
+                ORDER BY date;
+                """;
+            cmd.Parameters.AddWithValue("@startDate", startDate);
+            cmd.Parameters.AddWithValue("@endDate", endDate);
+
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+                results.Add(new DailyCostTotal(reader.GetString(0), reader.GetDouble(1)));
+        }
+        catch
+        {
+            // Best effort
+        }
+
+        return results;
     }
 
     /// <summary>

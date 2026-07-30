@@ -5,6 +5,7 @@ using AiToolsMonitor.Monitoring;
 using AiToolsMonitor.Popup;
 using AiToolsMonitor.History;
 using AiToolsMonitor.Projects;
+using AiToolsMonitor.Reports;
 
 namespace AiToolsMonitor.Tray;
 
@@ -26,6 +27,7 @@ public sealed class TrayHost : IDisposable
     private bool _firstRunNoticeShown;
     private readonly HistoryDatabase _historyDb = new();
     private UsageHistoryIngester _ingester = null!;
+    private CostReportForm? _costReport;
 
     public TrayHost()
     {
@@ -135,6 +137,7 @@ public sealed class TrayHost : IDisposable
         PopulateRecentProjects(recentProjects);
         menu.Items.Add(recentProjects);
         menu.Items.Add("Export usage data...", null, (_, _) => ExportUsageData());
+        menu.Items.Add("Cost report...", null, (_, _) => ShowCostReport());
         menu.Items.Add("Open taskbar settings", null, (_, _) =>
         {
             try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("ms-settings:taskbar") { UseShellExecute = true }); }
@@ -143,6 +146,27 @@ public sealed class TrayHost : IDisposable
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Exit", null, (_, _) => Application.Exit());
         return menu;
+    }
+
+    private void ShowCostReport()
+    {
+        try
+        {
+            if (_costReport is { IsDisposed: false })
+            {
+                _costReport.Show();
+                _costReport.Activate();
+                return;
+            }
+
+            _costReport = new CostReportForm(_historyDb);
+            _costReport.FormClosed += (_, _) => _costReport = null;
+            _costReport.Show();
+        }
+        catch
+        {
+            // Best effort.
+        }
     }
 
     private static void PopulateRecentProjects(ToolStripMenuItem menu)
@@ -218,6 +242,7 @@ public sealed class TrayHost : IDisposable
         _pollTimer.Stop();
         _pollTimer.Dispose();
         _historyDb.Dispose();
+        _costReport?.Dispose();
         _notifyIcon.Visible = false;
         _notifyIcon.Dispose();
         _popup.Dispose();

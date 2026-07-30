@@ -20,8 +20,12 @@ public class UsageHistoryTests
         using var conn = new SqliteConnection($"Data Source={dbPath}");
         conn.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT name FROM sqlite_master WHERE type='table' AND name='usage_history';";
-        Assert.NotNull(cmd.ExecuteScalar());
+        cmd.CommandText = """
+            SELECT COUNT(*)
+            FROM sqlite_master
+            WHERE type='table' AND name IN ('usage_history', 'model_usage_history');
+            """;
+        Assert.Equal(2L, cmd.ExecuteScalar());
     }
 
     [Fact]
@@ -41,6 +45,35 @@ public class UsageHistoryTests
         var (tokens, cost) = db.GetSummaryForDate("2026-07-30");
         Assert.Equal(280, tokens); // 200 + 80
         Assert.Equal(0.25, cost);
+    }
+
+    [Fact]
+    public void HistoryDatabase_ModelUsageUpsertIsIdempotentAndQueryableByDate()
+    {
+        using var temp = new TempDirectory();
+        string dbPath = System.IO.Path.Combine(temp.Path, "history.db");
+        using var db = new HistoryDatabase(dbPath);
+        db.EnsureCreated();
+
+        db.UpsertModelDailyAggregate(
+            "Claude Code", "claude-sonnet-5", "2026-07-30",
+            100, 20, 0.0006, pricingKnown: true);
+        db.UpsertModelDailyAggregate(
+            "Claude Code", "claude-sonnet-5", "2026-07-30",
+            250, 50, 0.0015, pricingKnown: true);
+        db.UpsertModelDailyAggregate(
+            "Hermes Agent", "unmapped-model", "2026-07-30",
+            400, 80, 0, pricingKnown: false);
+
+        var models = db.GetModelUsage("2026-07-30", "2026-07-30");
+
+        Assert.Equal(2, models.Count);
+        var sonnet = Assert.Single(models, model => model.Model == "claude-sonnet-5");
+        Assert.Equal(300, sonnet.TotalTokens);
+        Assert.Equal(0.0015, sonnet.CostUsd, precision: 8);
+        Assert.True(sonnet.PricingKnown);
+        var unknown = Assert.Single(models, model => model.Model == "unmapped-model");
+        Assert.False(unknown.PricingKnown);
     }
 
     [Fact]
@@ -110,8 +143,8 @@ public class UsageHistoryTests
         File.WriteAllLines(transcript,
         [
             "{\"type\":\"user\",\"timestamp\":\"" + todayTimestamp + "\",\"message\":{}}",
-            "{\"type\":\"assistant\",\"timestamp\":\"" + todayTimestamp + "\",\"message\":{\"model\":\"claude\",\"usage\":{\"input_tokens\":100,\"output_tokens\":30}}}",
-            "{\"type\":\"assistant\",\"timestamp\":\"" + todayTimestamp + "\",\"message\":{\"model\":\"claude\",\"usage\":{\"input_tokens\":200,\"output_tokens\":60}}}",
+            "{\"type\":\"assistant\",\"timestamp\":\"" + todayTimestamp + "\",\"message\":{\"model\":\"claude-sonnet-5\",\"usage\":{\"input_tokens\":100,\"output_tokens\":30}}}",
+            "{\"type\":\"assistant\",\"timestamp\":\"" + todayTimestamp + "\",\"message\":{\"model\":\"claude-haiku-4-5-20251001\",\"usage\":{\"input_tokens\":200,\"output_tokens\":60}}}",
             "{\"type\":\"assistant\",\"timestamp\":\"" + yesterdayTimestamp + "\",\"message\":{\"model\":\"claude\",\"usage\":{\"input_tokens\":999,\"output_tokens\":999}}}",
         ]);
         File.SetLastWriteTimeUtc(transcript, DateTime.UtcNow);
@@ -132,6 +165,10 @@ public class UsageHistoryTests
         var (tokens, cost) = db.GetSummaryForDate(today);
         // Only today's messages: (100+30) + (200+60) = 390
         Assert.Equal(390, tokens);
+        var models = db.GetModelUsage(today, today);
+        Assert.Equal(2, models.Count);
+        Assert.All(models, model => Assert.True(model.PricingKnown));
+        Assert.All(models, model => Assert.True(model.CostUsd > 0));
     }
 
     [Fact]
@@ -191,6 +228,7 @@ public class UsageHistoryTests
         // Cost: 0.08 + 0.04 + 0.18 = 0.30
         Assert.Equal(420, tokens);
         Assert.Equal(0.30, cost, 2);
+        Assert.Equal(2, historyDb.GetModelUsage(today, today).Count);
     }
 
     [Fact]
@@ -219,12 +257,13 @@ public class UsageHistoryTests
                     tokens_reasoning INTEGER NOT NULL DEFAULT 0,
                     tokens_cache_read INTEGER NOT NULL DEFAULT 0,
                     tokens_cache_write INTEGER NOT NULL DEFAULT 0,
+                    model TEXT,
                     time_updated INTEGER NOT NULL
                 );
                 INSERT INTO session VALUES
-                    ('s1', '/proj1', 0.15, 300, 50, 0, 0, 0, :today1),
-                    ('s2', '/proj2', 0.25, 500, 80, 0, 0, 0, :today2),
-                    ('old', '/old', 1.00, 999, 999, 0, 0, 0, :yesterday);
+                    ('s1', '/proj1', 0.15, 300, 50, 0, 0, 0, '{"id":"posiden/mimo-v2.5","providerID":"wtf17","variant":"default"}', :today1),
+                    ('s2', '/proj2', 0.25, 500, 80, 0, 0, 0, 'ares/deepseek-v4-pro', :today2),
+                    ('old', '/old', 1.00, 999, 999, 0, 0, 0, 'gpt-4o', :yesterday);
                 """;
             cmd.Parameters.AddWithValue(":today1", todayMs + 3_600_000);
             cmd.Parameters.AddWithValue(":today2", todayMs + 7_200_000);
@@ -247,6 +286,10 @@ public class UsageHistoryTests
         // Today: (300+50) + (500+80) = 930 tokens, cost: 0.15+0.25 = 0.40
         Assert.Equal(930, tokens);
         Assert.Equal(0.40, cost, 2);
+        var models = historyDb.GetModelUsage(today, today);
+        Assert.Equal(2, models.Count);
+        Assert.All(models, model => Assert.True(model.PricingKnown));
+        Assert.Contains(models, model => model.Model == "posiden/mimo-v2.5");
     }
 
     [Fact]
