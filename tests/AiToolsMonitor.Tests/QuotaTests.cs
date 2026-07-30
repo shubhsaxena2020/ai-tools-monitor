@@ -57,7 +57,7 @@ public class QuotaTests
     }
 
     [Fact]
-    public void HermesQuotaClient_UsesLatestUsageRowAndActualCost()
+    public void HermesQuotaClient_AggregatesAllUsageRowsFromLatestSession()
     {
         using var temp = new TempDirectory();
         string dbPath = Path.Combine(temp.Path, "state.db");
@@ -72,13 +72,15 @@ public class QuotaTests
                     output_tokens INTEGER NOT NULL,
                     cache_read_tokens INTEGER NOT NULL,
                     cache_write_tokens INTEGER NOT NULL,
+                    reasoning_tokens INTEGER NOT NULL,
                     estimated_cost_usd REAL NOT NULL,
                     actual_cost_usd REAL NOT NULL,
                     last_seen REAL
                 );
                 INSERT INTO session_model_usage VALUES
-                    ('old', 'model-a', 1, 2, 3, 4, 0.10, 0.09, 1785394800),
-                    ('new', 'model-b', 200, 40, 30, 10, 0.50, 0.45, 1785398340);
+                    ('old', 'model-a', 1, 2, 3, 4, 5, 0.10, 0.09, 1785394800),
+                    ('new', 'model-b', 200, 40, 30, 10, 15, 0.50, 0.45, 1785398340),
+                    ('new', 'model-c', 100, 10, 5, 0, 7, 0.20, 0.00, 1785398330);
                 """);
         }
 
@@ -86,10 +88,12 @@ public class QuotaTests
 
         Assert.Equal(QuotaDisplayKind.Usage, quota.DisplayKind);
         Assert.Equal(QuotaFreshness.Live, quota.Freshness);
-        Assert.Equal(200, quota.InputTokens);
-        Assert.Equal(40, quota.OutputTokens);
-        Assert.Equal(40, quota.CacheTokens);
-        Assert.Equal(0.45, quota.CostUsd);
+        Assert.Equal(300, quota.InputTokens);
+        Assert.Equal(50, quota.OutputTokens);
+        Assert.Equal(45, quota.CacheTokens);
+        Assert.Equal(22, quota.ReasoningTokens);
+        Assert.Equal(0.65, quota.CostUsd);
+        Assert.Equal(new DateTimeOffset(2026, 7, 30, 7, 59, 0, TimeSpan.Zero), quota.ObservedAt);
     }
 
     [Fact]

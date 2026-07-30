@@ -39,18 +39,27 @@ public static class HermesQuotaClient
 
             using var command = connection.CreateCommand();
             command.CommandText = """
+                WITH latest_session AS (
+                    SELECT session_id
+                    FROM session_model_usage
+                    WHERE last_seen IS NOT NULL
+                    ORDER BY last_seen DESC
+                    LIMIT 1
+                )
                 SELECT
-                    input_tokens,
-                    output_tokens,
-                    cache_read_tokens,
-                    cache_write_tokens,
-                    estimated_cost_usd,
-                    actual_cost_usd,
-                    last_seen
+                    SUM(input_tokens),
+                    SUM(output_tokens),
+                    SUM(cache_read_tokens),
+                    SUM(cache_write_tokens),
+                    SUM(reasoning_tokens),
+                    SUM(CASE
+                        WHEN actual_cost_usd > 0 THEN actual_cost_usd
+                        ELSE estimated_cost_usd
+                    END),
+                    MAX(last_seen)
                 FROM session_model_usage
-                WHERE last_seen IS NOT NULL
-                ORDER BY last_seen DESC
-                LIMIT 1;
+                WHERE session_id = (SELECT session_id FROM latest_session)
+                GROUP BY session_id;
                 """;
 
             using var reader = command.ExecuteReader();
@@ -60,11 +69,10 @@ public static class HermesQuotaClient
             long inputTokens = reader.GetInt64(0);
             long outputTokens = reader.GetInt64(1);
             long cacheTokens = reader.GetInt64(2) + reader.GetInt64(3);
-            double estimatedCost = reader.GetDouble(4);
-            double actualCost = reader.GetDouble(5);
+            long reasoningTokens = reader.GetInt64(4);
+            double cost = reader.GetDouble(5);
             var observedAt = DateTimeOffset.FromUnixTimeSeconds(
                 checked((long)Math.Floor(reader.GetDouble(6))));
-            double cost = actualCost > 0 ? actualCost : estimatedCost;
             var freshness = GetFreshness(now ?? DateTimeOffset.UtcNow, observedAt);
 
             return new ToolQuota(
@@ -75,6 +83,7 @@ public static class HermesQuotaClient
                 InputTokens: inputTokens,
                 OutputTokens: outputTokens,
                 CacheTokens: cacheTokens,
+                ReasoningTokens: reasoningTokens,
                 CostUsd: cost,
                 ObservedAt: observedAt,
                 DisplayKind: QuotaDisplayKind.Usage);

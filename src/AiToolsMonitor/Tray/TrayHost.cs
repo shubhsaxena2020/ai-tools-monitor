@@ -1,6 +1,10 @@
+using System.Globalization;
+using System.Text;
+using AiToolsMonitor.Export;
 using AiToolsMonitor.Monitoring;
 using AiToolsMonitor.Popup;
 using AiToolsMonitor.History;
+using AiToolsMonitor.Projects;
 
 namespace AiToolsMonitor.Tray;
 
@@ -16,6 +20,8 @@ public sealed class TrayHost : IDisposable
     private readonly StatusPopup _popup = new();
     private readonly System.Windows.Forms.Timer _pollTimer;
     private readonly ProcessEnumerator _enumerator = new();
+    private readonly BudgetThresholdTracker _budgetThresholdTracker = new();
+    private StatusSnapshot? _currentSnapshot;
     private int _runningCount = -1;
     private bool _firstRunNoticeShown;
     private readonly HistoryDatabase _historyDb = new();
@@ -77,6 +83,7 @@ public sealed class TrayHost : IDisposable
         }).ToList();
 
         var snapshot = new StatusSnapshot(enrichedTools, rawSnapshot.SampledAtUtc);
+        _currentSnapshot = snapshot;
         _popup.Render(snapshot);
 
         try
@@ -103,6 +110,19 @@ public sealed class TrayHost : IDisposable
                 "Running. If you don't see the icon, open the hidden icons arrow and drag it beside the clock.",
                 ToolTipIcon.Info);
         }
+
+        foreach (var tool in _budgetThresholdTracker.GetNewlyExceededTools(snapshot))
+        {
+            string percent = tool.Quota!.PrimaryPercent!.Value.ToString(
+                "0.#",
+                CultureInfo.InvariantCulture);
+            _notifyIcon.ShowBalloonTip(
+                4000,
+                "AI Tools Monitor budget warning",
+                $"{tool.DisplayName} primary usage has reached {percent}%.",
+                ToolTipIcon.Warning);
+        }
+
     }
 
     private ContextMenuStrip BuildContextMenu()
@@ -110,6 +130,11 @@ public sealed class TrayHost : IDisposable
         var menu = new ContextMenuStrip();
         menu.Items.Add("Open", null, (_, _) => _popup.ShowNearTray());
         menu.Items.Add("Refresh now", null, (_, _) => Poll());
+        var recentProjects = new ToolStripMenuItem("Recent Projects");
+        recentProjects.DropDownOpening += (_, _) => PopulateRecentProjects(recentProjects);
+        PopulateRecentProjects(recentProjects);
+        menu.Items.Add(recentProjects);
+        menu.Items.Add("Export usage data...", null, (_, _) => ExportUsageData());
         menu.Items.Add("Open taskbar settings", null, (_, _) =>
         {
             try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("ms-settings:taskbar") { UseShellExecute = true }); }
@@ -118,6 +143,74 @@ public sealed class TrayHost : IDisposable
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Exit", null, (_, _) => Application.Exit());
         return menu;
+    }
+
+    private static void PopulateRecentProjects(ToolStripMenuItem menu)
+    {
+        menu.DropDownItems.Clear();
+        var projects = RecentProjectProvider.GetRecentProjects();
+        if (projects.Count == 0)
+        {
+            menu.DropDownItems.Add(new ToolStripMenuItem("No recent projects") { Enabled = false });
+            return;
+        }
+
+        foreach (string project in projects)
+        {
+            menu.DropDownItems.Add(project, null, (_, _) => OpenProject(project));
+        }
+    }
+
+    private static void OpenProject(string project)
+    {
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "cmd.exe",
+                Arguments = $"/k cd /d \"{project}\"",
+                UseShellExecute = true,
+            });
+        }
+        catch
+        {
+            // Best effort.
+        }
+    }
+
+    private void ExportUsageData()
+    {
+        StatusSnapshot? snapshot = _currentSnapshot;
+        if (snapshot is null)
+            return;
+
+        using var dialog = new SaveFileDialog
+        {
+            Title = "Export usage data",
+            Filter = "CSV files (*.csv)|*.csv|JSON files (*.json)|*.json",
+            DefaultExt = "csv",
+            AddExtension = true,
+            FileName = $"ai-tools-usage-{DateTime.Now:yyyyMMdd-HHmmss}.csv",
+        };
+
+        if (dialog.ShowDialog(_popup) != DialogResult.OK)
+            return;
+
+        try
+        {
+            string content = Path.GetExtension(dialog.FileName)
+                .Equals(".json", StringComparison.OrdinalIgnoreCase)
+                ? StatusSnapshotFormatter.ToJson(snapshot)
+                : StatusSnapshotFormatter.ToCsv(snapshot);
+            File.WriteAllText(
+                dialog.FileName,
+                content,
+                new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        }
+        catch
+        {
+            // Best effort.
+        }
     }
 
     public void Dispose()
