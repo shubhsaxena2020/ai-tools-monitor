@@ -69,6 +69,15 @@ public sealed class HistoryDatabase : IDisposable
                     pricing_known INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY (date, tool, model)
                 );
+
+                CREATE TABLE IF NOT EXISTS session_history (
+                    session_id TEXT NOT NULL,
+                    tool TEXT NOT NULL,
+                    start_utc TEXT NOT NULL,
+                    end_utc TEXT NOT NULL,
+                    total_tokens INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (session_id, tool)
+                );
                 """;
             cmd.ExecuteNonQuery();
         }
@@ -333,6 +342,161 @@ public sealed class HistoryDatabase : IDisposable
             // Best effort
         }
         return list;
+    }
+
+    /// <summary>Returns per-date totals within [startDate, endDate] inclusive, ordered by date.</summary>
+    public List<(string date, long totalTokens, double totalCost)> GetUsageSummaryForDateRange(
+        string startDate, string endDate)
+    {
+        var results = new List<(string date, long totalTokens, double totalCost)>();
+        try
+        {
+            var conn = OpenConnection();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = """
+                SELECT date,
+                       COALESCE(SUM(input_tokens + output_tokens), 0) AS total_tokens,
+                       COALESCE(SUM(cost_usd), 0.0) AS total_cost
+                FROM usage_history
+                WHERE date >= @start AND date <= @end
+                GROUP BY date
+                ORDER BY date;
+                """;
+            cmd.Parameters.AddWithValue("@start", startDate);
+            cmd.Parameters.AddWithValue("@end", endDate);
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+                results.Add((reader.GetString(0), reader.GetInt64(1), reader.GetDouble(2)));
+        }
+        catch
+        {
+            // Best effort
+        }
+        return results;
+    }
+
+    /// <summary>Returns per-tool totals within [startDate, endDate] inclusive, ordered by tool name.</summary>
+    public List<(string tool, long totalTokens, double totalCost, int sessionCount)> GetDailyBreakdownByTool(
+        string startDate, string endDate)
+    {
+        var results = new List<(string tool, long totalTokens, double totalCost, int sessionCount)>();
+        try
+        {
+            var conn = OpenConnection();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = """
+                SELECT tool,
+                       COALESCE(SUM(input_tokens + output_tokens), 0) AS total_tokens,
+                       COALESCE(SUM(cost_usd), 0.0) AS total_cost,
+                       COALESCE(SUM(session_count), 0) AS total_sessions
+                FROM usage_history
+                WHERE date >= @start AND date <= @end
+                GROUP BY tool
+                ORDER BY tool;
+                """;
+            cmd.Parameters.AddWithValue("@start", startDate);
+            cmd.Parameters.AddWithValue("@end", endDate);
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+                results.Add((reader.GetString(0), reader.GetInt64(1), reader.GetDouble(2), reader.GetInt32(3)));
+        }
+        catch
+        {
+            // Best effort
+        }
+        return results;
+    }
+
+    /// <summary>Returns daily total tokens for the last N days (for the heatmap).</summary>
+    public List<(string date, long totalTokens)> GetDailyActivityForHeatmap(int daysBack = 90)
+    {
+        var results = new List<(string date, long totalTokens)>();
+        try
+        {
+            var conn = OpenConnection();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = """
+                SELECT date,
+                       COALESCE(SUM(input_tokens + output_tokens), 0) AS total_tokens
+                FROM usage_history
+                WHERE date >= @start
+                GROUP BY date
+                ORDER BY date;
+                """;
+            string startDate = DateTime.UtcNow.AddDays(-daysBack).ToString("yyyy-MM-dd");
+            cmd.Parameters.AddWithValue("@start", startDate);
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+                results.Add((reader.GetString(0), reader.GetInt64(1)));
+        }
+        catch
+        {
+            // Best effort
+        }
+        return results;
+    }
+
+    /// <summary>Upserts a session boundary record (idempotent).</summary>
+    public void UpsertSession(
+        string sessionId, string tool,
+        string startUtc, string endUtc, long totalTokens)
+    {
+        try
+        {
+            var conn = OpenConnection();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = """
+                INSERT INTO session_history (session_id, tool, start_utc, end_utc, total_tokens)
+                VALUES (@sessionId, @tool, @startUtc, @endUtc, @totalTokens)
+                ON CONFLICT(session_id, tool) DO UPDATE SET
+                    start_utc = @startUtc,
+                    end_utc = @endUtc,
+                    total_tokens = @totalTokens;
+                """;
+            cmd.Parameters.AddWithValue("@sessionId", sessionId);
+            cmd.Parameters.AddWithValue("@tool", tool);
+            cmd.Parameters.AddWithValue("@startUtc", startUtc);
+            cmd.Parameters.AddWithValue("@endUtc", endUtc);
+            cmd.Parameters.AddWithValue("@totalTokens", totalTokens);
+            cmd.ExecuteNonQuery();
+        }
+        catch
+        {
+            // Best effort
+        }
+    }
+
+    /// <summary>Returns sessions whose start date falls within [startDate, endDate], newest first.</summary>
+    public List<(string sessionId, string tool, string startUtc, string endUtc, long totalTokens)>
+        GetSessionsForDateRange(string startDate, string endDate)
+    {
+        var results = new List<(string sessionId, string tool, string startUtc, string endUtc, long totalTokens)>();
+        try
+        {
+            var conn = OpenConnection();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = """
+                SELECT session_id, tool, start_utc, end_utc, total_tokens
+                FROM session_history
+                WHERE date(start_utc) >= @start AND date(start_utc) <= @end
+                ORDER BY start_utc DESC;
+                """;
+            cmd.Parameters.AddWithValue("@start", startDate);
+            cmd.Parameters.AddWithValue("@end", endDate);
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+                results.Add((
+                    reader.GetString(0),
+                    reader.GetString(1),
+                    reader.GetString(2),
+                    reader.GetString(3),
+                    reader.GetInt64(4)));
+        }
+        catch
+        {
+            // Best effort
+        }
+        return results;
     }
 
     public void Dispose()
