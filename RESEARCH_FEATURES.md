@@ -156,28 +156,34 @@
 
 ## Implementation Priority (Ranked by Value vs. Effort)
 
-| Priority | Feature | Effort | Value |
-|----------|---------|--------|-------|
-| 1 | Feature 1: Per-Model Cost Breakdown | Medium | ★★★★★ |
-| 2 | Feature 2: Daily/Weekly/Monthly Summaries | Low | ★★★★★ |
-| 3 | Feature 7: Persistent History Cache | Medium | ★★★★★ |
-| 4 | Feature 10: Budget Threshold Notifications | Low | ★★★★☆ |
-| 5 | Feature 6: Session Timeline | Low | ★★★★☆ |
-| 6 | Feature 12: Recent Project Switcher | Low | ★★★★☆ |
-| 7 | Feature 19: CSV/JSON Export | Low | ★★★★☆ |
-| 8 | Feature 14: Aggregated Daily Summary | Low | ★★★★☆ |
-| 9 | Feature 4: Cost Forecasting | Low | ★★★☆☆ |
-| 10 | Feature 18: Model Cost-Effectiveness | Low | ★★★☆☆ |
-| 11 | Feature 8: Activity Heatmap | Medium | ★★★☆☆ |
-| 12 | Feature 17: Cross-Tool Comparison | Medium | ★★★☆☆ |
-| 13 | Feature 15: Task Category Classification | Medium | ★★★☆☆ |
-| 14 | Feature 16: One-Shot Success Rate | Medium | ★★★☆☆ |
-| 15 | Feature 3: Budget Guard (Hard/Soft Caps) | Medium | ★★☆☆☆ |
-| 16 | Feature 5: Multi-Currency | Low | ★★☆☆☆ |
-| 17 | Feature 11: Cost Anomaly Detection | Medium | ★★☆☆☆ |
-| 18 | Feature 13: Quick Command Palette | Low | ★★☆☆☆ |
-| 19 | Feature 20: Setup Health Grade | Hard | ★★☆☆☆ |
-| 20 | Feature 9: Rate Limit Monitoring | Hard | ★☆☆☆☆ |
+All 20 features below are implemented as of 2026-07-30 (see git log). Where the tray menu item lives is noted.
+
+| Priority | Feature | Effort | Value | Status | Where |
+|----------|---------|--------|-------|--------|-------|
+| 1 | Feature 1: Per-Model Cost Breakdown | Medium | ★★★★★ | Done | "Cost report..." |
+| 2 | Feature 2: Daily/Weekly/Monthly Summaries | Low | ★★★★★ | Done | "Usage history..." |
+| 3 | Feature 7: Persistent History Cache | Medium | ★★★★★ | Done | history.db (background) |
+| 4 | Feature 10: Budget Threshold Notifications | Low | ★★★★☆ | Done | tray balloon tips |
+| 5 | Feature 6: Session Timeline | Low | ★★★★☆ | Done | "Usage history..." |
+| 6 | Feature 12: Recent Project Switcher | Low | ★★★★☆ | Done | "Recent Projects" |
+| 7 | Feature 19: CSV/JSON Export | Low | ★★★★☆ | Done | "Export usage data..." |
+| 8 | Feature 14: Aggregated Daily Summary | Low | ★★★★☆ | Done | "Usage history..." |
+| 9 | Feature 4: Cost Forecasting | Low | ★★★☆☆ | Done | "Cost report..." |
+| 10 | Feature 18: Model Cost-Effectiveness | Low | ★★★☆☆ | Done | "Cost report..." |
+| 11 | Feature 8: Activity Heatmap | Medium | ★★★☆☆ | Done | "Usage history..." |
+| 12 | Feature 17: Cross-Tool Comparison | Medium | ★★★☆☆ | Done | "Analysis..." |
+| 13 | Feature 15: Task Category Classification | Medium | ★★★☆☆ | Done | "Analysis..." |
+| 14 | Feature 16: One-Shot Success Rate | Medium | ★★★☆☆ | Done | "Analysis..." |
+| 15 | Feature 3: Budget Guard (Hard/Soft Caps) | Medium | ★★☆☆☆ | Done | "Edit budget..." |
+| 16 | Feature 5: Multi-Currency | Low | ★★☆☆☆ | Done | "Cost report..." |
+| 17 | Feature 11: Cost Anomaly Detection | Medium | ★★☆☆☆ | Done | "Edit budget..." |
+| 18 | Feature 13: Quick Command Palette | Low | ★★☆☆☆ | Done | "Quick launch" |
+| 19 | Feature 20: Setup Health Grade | Hard | ★★☆☆☆ | Done (scoped down, see below) | "Analysis..." |
+| 20 | Feature 9: Rate Limit Monitoring | Hard | ★☆☆☆☆ | Already existed | popup card "Resets in..." |
+
+**Notes on scope decisions made during implementation:**
+- Feature 20 (Setup Health Grade) was deliberately scoped down to 3 concrete, cheaply-verifiable checks (CLAUDE.md presence/size, installed skills/agents duplicate-name detection, repeated-file-read waste signal) rather than the full heuristic list originally imagined — each check only exists because it was confirmed computable from real data on this machine.
+- Feature 9 (Rate Limit Monitoring) turned out to already be implemented in the main popup (`StatusPopup.cs`'s "Resets in Xh Ym" countdown) from earlier work — correctly identified and left alone instead of duplicated.
 
 ---
 
