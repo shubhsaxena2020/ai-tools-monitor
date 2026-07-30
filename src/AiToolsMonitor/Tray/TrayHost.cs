@@ -1,5 +1,6 @@
 using AiToolsMonitor.Monitoring;
 using AiToolsMonitor.Popup;
+using AiToolsMonitor.History;
 
 namespace AiToolsMonitor.Tray;
 
@@ -17,6 +18,8 @@ public sealed class TrayHost : IDisposable
     private readonly ProcessEnumerator _enumerator = new();
     private int _runningCount = -1;
     private bool _firstRunNoticeShown;
+    private readonly HistoryDatabase _historyDb = new();
+    private UsageHistoryIngester _ingester = null!;
 
     public TrayHost()
     {
@@ -36,6 +39,9 @@ public sealed class TrayHost : IDisposable
         _pollTimer = new System.Windows.Forms.Timer { Interval = 2500 };
         _pollTimer.Tick += (_, _) => Poll();
         _pollTimer.Start();
+
+        _historyDb.EnsureCreated();
+        _ingester = new UsageHistoryIngester(_historyDb);
 
         Poll(); // first sample immediately so the popup isn't empty on first open
     }
@@ -72,6 +78,14 @@ public sealed class TrayHost : IDisposable
 
         var snapshot = new StatusSnapshot(enrichedTools, rawSnapshot.SampledAtUtc);
         _popup.Render(snapshot);
+
+        try
+        {
+            _ingester.Ingest();
+            var (tokens, cost) = _historyDb.GetTodaySummary();
+            _popup.UpdateTodaySummary(tokens, cost);
+        }
+        catch { /* best effort — history ingestion must never crash the app */ }
 
         if (snapshot.RunningCount != _runningCount)
         {
@@ -110,6 +124,7 @@ public sealed class TrayHost : IDisposable
     {
         _pollTimer.Stop();
         _pollTimer.Dispose();
+        _historyDb.Dispose();
         _notifyIcon.Visible = false;
         _notifyIcon.Dispose();
         _popup.Dispose();

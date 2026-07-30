@@ -30,6 +30,7 @@ public sealed class StatusPopup : Form
     private readonly Panel _footerContainer;
     private readonly Label _lastUpdatedLabel;
     private readonly Label _runningCountBadge;
+    private readonly Label _todaySummaryLabel;
 
     private ThemeSettings _theme;
     private BackdropMode _backdropMode;
@@ -95,12 +96,12 @@ public sealed class StatusPopup : Form
 
         // Footer Panel
         _footerContainer = new Panel
-        {
-            Dock = DockStyle.Bottom,
-            Height = 40,
-            Padding = new Padding(16, 8, 16, 8),
-            BackColor = Color.Transparent,
-        };
+            {
+                Dock = DockStyle.Bottom,
+                Height = 58,
+                Padding = new Padding(16, 8, 16, 8),
+                BackColor = Color.Transparent,
+            };
 
         _lastUpdatedLabel = new Label
         {
@@ -123,9 +124,20 @@ public sealed class StatusPopup : Form
         };
 
         _footerContainer.Controls.Add(_lastUpdatedLabel);
-        _footerContainer.Controls.Add(_runningCountBadge);
+            _footerContainer.Controls.Add(_runningCountBadge);
 
-        // Center scrollable card list container
+            _todaySummaryLabel = new Label
+            {
+                Text = "",
+                Font = new Font("Segoe UI", 8f, FontStyle.Bold),
+                AutoSize = true,
+                Location = new Point(16, 24),
+                BackColor = Color.Transparent,
+                Visible = false,
+            };
+            _footerContainer.Controls.Add(_todaySummaryLabel);
+
+            // Center scrollable card list container
         _cardContainer = new FlowLayoutPanel
         {
             Dock = DockStyle.Fill,
@@ -327,6 +339,7 @@ public sealed class StatusPopup : Form
         _headerSubtitle.ForeColor = _secondaryText;
         _lastUpdatedLabel.ForeColor = _secondaryText;
         _runningCountBadge.ForeColor = _pinkAccent;
+        _todaySummaryLabel.ForeColor = _pinkAccent;
     }
 
     public void Render(StatusSnapshot snapshot)
@@ -589,6 +602,20 @@ public sealed class StatusPopup : Form
             >= 1_000 => $"{tokens.Value / 1_000d:0.#}K",
             _ => tokens.Value.ToString()
         };
+    }
+
+    public void UpdateTodaySummary(long totalTokens, double totalCost)
+    {
+        if (totalTokens > 0 || totalCost > 0)
+        {
+            string tokenStr = FormatTokenCount(totalTokens);
+            _todaySummaryLabel.Text = $"Today: {tokenStr} tokens, ${totalCost:0.00}";
+            _todaySummaryLabel.Visible = true;
+        }
+        else
+        {
+            _todaySummaryLabel.Visible = false;
+        }
     }
 
     public void ShowNearTray()
